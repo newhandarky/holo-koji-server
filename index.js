@@ -1,47 +1,56 @@
-// server/index.js
+// server/index.js - 修正 CORS 設定
 import express from 'express';
 import { createServer } from 'http';
 import { WebSocketServer } from 'ws';
 import cors from 'cors';
 
-/*
- * 建立 Express 應用與 HTTP 伺服器
- */
 const app = express();
 const server = createServer(app);
 
-// 中介軟體設置
-app.use(cors());                    // 允許跨域請求
-app.use(express.json());           // 解析 JSON 請求體
+// CORS 設定 - 修正 GitHub Pages 完整路徑
+app.use(cors({
+    origin: [
+        'http://localhost:3000',                              // 本地開發
+        'https://holo-koji-frontend.onrender.com',           // Render.com 前端
+        'https://newhandarky.github.io',                     // GitHub Pages 根域名
+        'https://newhandarky.github.io/holo-koji',           // GitHub Pages 完整路徑（重要！）
+        'https://newhandarky.github.io/holo-koji/'           // GitHub Pages 完整路徑含斜槓
+    ],
+    credentials: true,
+    methods: ['GET', 'POST', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization']
+}));
 
-/*
- * 遊戲房間管理
- */
-const gameRooms = new Map();       // 儲存所有遊戲房間
+app.use(express.json());
 
-/*
- * WebSocket 伺服器
- */
+// 健康檢查端點
+app.get('/health', (req, res) => {
+    res.json({
+        status: 'ok',
+        environment: process.env.NODE_ENV,
+        timestamp: new Date().toISOString(),
+        corsOrigins: [
+            'http://localhost:3000',
+            'https://holo-koji-frontend.onrender.com',
+            'https://newhandarky.github.io',
+            'https://newhandarky.github.io/holo-koji',
+            'https://newhandarky.github.io/holo-koji/'
+        ]
+    });
+});
+
+// WebSocket 設定
+const gameRooms = new Map();
 const wss = new WebSocketServer({ server });
 
-/*
- * 遊戲房間類別
- * 管理房間內的玩家和遊戲狀態
- */
 class GameRoom {
     constructor(roomId) {
-        this.roomId = roomId;            // 房間 ID
-        this.players = [];               // 玩家陣列 { playerId, ws }
-        this.gameState = null;           // 遊戲狀態
-        this.maxPlayers = 2;             // 最大玩家數
+        this.roomId = roomId;
+        this.players = [];
+        this.gameState = null;
+        this.maxPlayers = 2;
     }
 
-    /*
-     * 添加玩家到房間
-     * @param playerId 玩家 ID
-     * @param ws WebSocket 連線
-     * @returns boolean 是否成功加入
-     */
     addPlayer(playerId, ws) {
         if (this.players.length < this.maxPlayers) {
             this.players.push({ playerId, ws });
@@ -51,53 +60,52 @@ class GameRoom {
         return false;
     }
 
-    /*
-     * 移除玩家
-     * @param playerId 玩家 ID
-     */
     removePlayer(playerId) {
         this.players = this.players.filter(p => p.playerId !== playerId);
         console.log(`❌ 玩家 ${playerId} 離開房間 ${this.roomId}，當前玩家數：${this.players.length}`);
     }
 
-    /*
-     * 廣播訊息給房間內所有玩家
-     * @param message 訊息物件
-     * @param excludePlayerId 排除的玩家 ID
-     */
+    // 修正：確保所有活躍連線都收到廣播
     broadcast(message, excludePlayerId = null) {
-        console.log(`📢 房間 ${this.roomId} 廣播訊息:`, message);
-        this.players.forEach(player => {
-            if (player.playerId !== excludePlayerId && player.ws.readyState === 1) {
-                player.ws.send(JSON.stringify(message));
+        console.log(`📢 房間 ${this.roomId} 廣播訊息給 ${this.players.length} 個玩家:`, message.type);
+
+        let successCount = 0;
+        this.players.forEach((player, index) => {
+            if (player.playerId !== excludePlayerId) {
+                if (player.ws.readyState === 1) { // WebSocket.OPEN
+                    try {
+                        player.ws.send(JSON.stringify(message));
+                        console.log(`  ✅ 成功發送給玩家 ${player.playerId} (${index + 1}/${this.players.length})`);
+                        successCount++;
+                    } catch (error) {
+                        console.error(`  ❌ 發送失敗給玩家 ${player.playerId}:`, error);
+                    }
+                } else {
+                    console.warn(`  ⚠️ 玩家 ${player.playerId} 連線狀態異常: ${player.ws.readyState}`);
+                }
             }
         });
+
+        console.log(`📢 廣播完成，成功發送給 ${successCount} 個玩家`);
     }
 
-    /*
-     * 檢查房間是否滿員
-     */
     isFull() {
         return this.players.length === this.maxPlayers;
     }
 }
 
-/*
- * WebSocket 連接處理
- */
-wss.on('connection', (ws) => {
-    console.log('🔌 客戶端已連接');
+wss.on('connection', (ws, req) => {
+    // 記錄連接來源
+    const origin = req.headers.origin;
+    console.log('🔌 客戶端已連接，來源:', origin);
 
-    let currentPlayerId = null;        // 當前玩家 ID
-    let currentRoomId = null;          // 當前房間 ID
+    let currentPlayerId = null;
+    let currentRoomId = null;
 
-    /*
-     * 處理接收到的訊息
-     */
     ws.on('message', (data) => {
         try {
             const message = JSON.parse(data.toString());
-            console.log('📨 收到訊息:', message);
+            console.log('📨 收到訊息:', message, '來源:', origin);
 
             switch (message.type) {
                 case 'JOIN_ROOM':
@@ -120,30 +128,24 @@ wss.on('connection', (ws) => {
         }
     });
 
-    /*
-     * 處理連線關閉
-     */
     ws.on('close', () => {
         if (currentRoomId && currentPlayerId) {
             handleLeaveRoom(ws);
         }
-        console.log('🔌 客戶端已斷線');
+        console.log('🔌 客戶端已斷線，來源:', origin);
     });
 
-    /*
-     * 建立房間處理函數
-     */
     function handleCreateRoom(ws, payload) {
-        const roomId = generateRoomId();              // 生成房間 ID
-        const room = new GameRoom(roomId);            // 建立新房間
-        gameRooms.set(roomId, room);                 // 儲存房間
+        const roomId = generateRoomId();
+        const room = new GameRoom(roomId);
+        gameRooms.set(roomId, room);
 
         currentPlayerId = payload.playerId;
         currentRoomId = roomId;
 
-        room.addPlayer(currentPlayerId, ws);         // 加入房間
+        room.addPlayer(currentPlayerId, ws);
 
-        console.log(`🏠 房間 ${roomId} 已建立，創建者：${currentPlayerId}`);
+        console.log(`🏠 房間 ${roomId} 已建立，創建者：${currentPlayerId}，來源：${origin}`);
 
         // 發送房間建立成功回應
         ws.send(JSON.stringify({
@@ -155,16 +157,13 @@ wss.on('connection', (ws) => {
         const initialGameState = createWaitingGameState(roomId, [currentPlayerId]);
         room.gameState = initialGameState;
 
-        // 發送初始遊戲狀態
-        ws.send(JSON.stringify({
+        // 立即廣播初始狀態給房間內所有玩家
+        room.broadcast({
             type: 'GAME_STATE_UPDATED',
             payload: initialGameState
-        }));
+        });
     }
 
-    /*
-     * 加入房間處理函數
-     */
     function handleJoinRoom(ws, payload) {
         const { roomId, playerId } = payload;
         const room = gameRooms.get(roomId);
@@ -190,7 +189,7 @@ wss.on('connection', (ws) => {
 
         room.addPlayer(playerId, ws);
 
-        console.log(`👤 玩家 ${playerId} 加入房間 ${roomId}`);
+        console.log(`👤 玩家 ${playerId} 加入房間 ${roomId}，來源：${origin}`);
 
         // 通知加入者
         ws.send(JSON.stringify({
@@ -198,29 +197,30 @@ wss.on('connection', (ws) => {
             payload: { playerId, roomId }
         }));
 
-        // 如果房間滿了，開始遊戲
-        if (room.isFull()) {
-            console.log(`🎮 房間 ${roomId} 已滿，開始遊戲`);
-            startGame(room);
-        } else {
-            // 更新等待狀態給所有玩家
-            const waitingGameState = createWaitingGameState(roomId, room.players.map(p => p.playerId));
-            room.gameState = waitingGameState;
+        // 更新遊戲狀態包含兩位玩家
+        const updatedGameState = createWaitingGameState(roomId, room.players.map(p => p.playerId));
+        room.gameState = updatedGameState;
 
-            room.broadcast({
-                type: 'GAME_STATE_UPDATED',
-                payload: waitingGameState
-            });
+        // 廣播更新的狀態給所有玩家
+        room.broadcast({
+            type: 'GAME_STATE_UPDATED',
+            payload: updatedGameState
+        });
+
+        // 如果房間滿了，延遲開始遊戲確保狀態更新
+        if (room.isFull()) {
+            console.log(`🎮 房間 ${roomId} 已滿，準備開始遊戲`);
+
+            // 延遲 500ms 開始遊戲，確保所有玩家都收到狀態更新
+            setTimeout(() => {
+                startGame(room);
+            }, 500);
         }
     }
 
-    /*
-     * 遊戲動作處理函數
-     */
     function handleGameAction(ws, payload) {
         const room = gameRooms.get(currentRoomId);
         if (room) {
-            // 廣播遊戲動作給房間內其他玩家
             room.broadcast({
                 type: 'GAME_ACTION',
                 payload: { ...payload, playerId: currentPlayerId }
@@ -228,9 +228,6 @@ wss.on('connection', (ws) => {
         }
     }
 
-    /*
-     * 離開房間處理函數
-     */
     function handleLeaveRoom(ws) {
         if (currentRoomId && currentPlayerId) {
             const room = gameRooms.get(currentRoomId);
@@ -241,7 +238,6 @@ wss.on('connection', (ws) => {
                     payload: { playerId: currentPlayerId }
                 });
 
-                // 如果房間空了，刪除房間
                 if (room.players.length === 0) {
                     gameRooms.delete(currentRoomId);
                     console.log(`🗑️ 房間 ${currentRoomId} 已刪除`);
@@ -251,9 +247,6 @@ wss.on('connection', (ws) => {
     }
 });
 
-/*
- * 開始遊戲
- */
 function startGame(room) {
     const playerIds = room.players.map(p => p.playerId);
     const gameState = createGameState(room.roomId, playerIds);
@@ -266,11 +259,10 @@ function startGame(room) {
         type: 'GAME_STARTED',
         payload: gameState
     });
+
+    console.log(`📢 GAME_STARTED 已廣播給 ${room.players.length} 個玩家`);
 }
 
-/*
- * 建立等待中的遊戲狀態
- */
 function createWaitingGameState(gameId, playerIds) {
     return {
         gameId,
@@ -283,9 +275,6 @@ function createWaitingGameState(gameId, playerIds) {
     };
 }
 
-/*
- * 建立完整遊戲狀態
- */
 function createGameState(gameId, playerIds) {
     const players = playerIds.map(id => createPlayerWithCards(id));
 
@@ -300,9 +289,6 @@ function createGameState(gameId, playerIds) {
     };
 }
 
-/*
- * 建立玩家（無卡片）
- */
 function createPlayer(playerId) {
     return {
         id: playerId,
@@ -320,14 +306,11 @@ function createPlayer(playerId) {
     };
 }
 
-/*
- * 建立玩家（含卡片）
- */
 function createPlayerWithCards(playerId) {
     return {
         id: playerId,
         name: playerId,
-        hand: generateInitialHand(),        // 生成初始手牌
+        hand: generateInitialHand(),
         playedCards: [],
         secretCards: [],
         discardedCards: [],
@@ -340,24 +323,18 @@ function createPlayerWithCards(playerId) {
     };
 }
 
-/*
- * 生成初始手牌（6 張卡片）
- */
 function generateInitialHand() {
     const cards = [];
     for (let i = 0; i < 6; i++) {
         cards.push({
             id: `card-${Math.random().toString(36).substring(2)}`,
-            geishaId: Math.floor(Math.random() * 7) + 1,    // 1-7 對應藝妓
+            geishaId: Math.floor(Math.random() * 7) + 1,
             type: '物品'
         });
     }
     return cards;
 }
 
-/*
- * 建立初始藝妓狀態
- */
 function createInitialGeishas() {
     return [
         { id: 1, name: '洋子', charmPoints: 2, controlledBy: null },
@@ -370,18 +347,22 @@ function createInitialGeishas() {
     ];
 }
 
-/*
- * 生成隨機房間 ID
- */
 function generateRoomId() {
     return Math.random().toString(36).substring(2, 8).toUpperCase();
 }
 
-/*
- * 啟動伺服器
- */
+// 使用動態端口
 const PORT = process.env.PORT || 3001;
 
-server.listen(PORT, () => {
-    console.log(`🚀 伺服器運行在 http://localhost:${PORT}`);
+server.listen(PORT, '0.0.0.0', () => {
+    console.log(`🚀 伺服器運行在 port ${PORT}`);
+    console.log(`🌍 環境: ${process.env.NODE_ENV}`);
+    console.log(`⚡ WebSocket 伺服器已啟動`);
+    console.log(`📊 CORS 允許的域名:`, [
+        'http://localhost:3000',
+        'https://holo-koji-frontend.onrender.com',
+        'https://newhandarky.github.io',
+        'https://newhandarky.github.io/holo-koji',
+        'https://newhandarky.github.io/holo-koji/'
+    ]);
 });
