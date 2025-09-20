@@ -1,4 +1,4 @@
-// server/index.js - 修正 CORS 設定
+// server/index.js - 添加隨機順序決定功能
 import express from 'express';
 import { createServer } from 'http';
 import { WebSocketServer } from 'ws';
@@ -7,14 +7,14 @@ import cors from 'cors';
 const app = express();
 const server = createServer(app);
 
-// CORS 設定 - 修正 GitHub Pages 完整路徑
+// CORS 設定
 app.use(cors({
     origin: [
-        'http://localhost:3000',                              // 本地開發
-        'https://holo-koji-frontend.onrender.com',           // Render.com 前端
-        'https://newhandarky.github.io',                     // GitHub Pages 根域名
-        'https://newhandarky.github.io/holo-koji',           // GitHub Pages 完整路徑（重要！）
-        'https://newhandarky.github.io/holo-koji/'           // GitHub Pages 完整路徑含斜槓
+        'http://localhost:3000',
+        'https://holo-koji-frontend.onrender.com',
+        'https://newhandarky.github.io',
+        'https://newhandarky.github.io/holo-koji',
+        'https://newhandarky.github.io/holo-koji/'
     ],
     credentials: true,
     methods: ['GET', 'POST', 'OPTIONS'],
@@ -39,7 +39,6 @@ app.get('/health', (req, res) => {
     });
 });
 
-// WebSocket 設定
 const gameRooms = new Map();
 const wss = new WebSocketServer({ server });
 
@@ -49,6 +48,11 @@ class GameRoom {
         this.players = [];
         this.gameState = null;
         this.maxPlayers = 2;
+        this.orderDecisionState = {
+            isDeciding: false,
+            result: null,
+            confirmations: new Set()
+        };
     }
 
     addPlayer(playerId, ws) {
@@ -65,14 +69,13 @@ class GameRoom {
         console.log(`❌ 玩家 ${playerId} 離開房間 ${this.roomId}，當前玩家數：${this.players.length}`);
     }
 
-    // 修正：確保所有活躍連線都收到廣播
     broadcast(message, excludePlayerId = null) {
         console.log(`📢 房間 ${this.roomId} 廣播訊息給 ${this.players.length} 個玩家:`, message.type);
 
         let successCount = 0;
         this.players.forEach((player, index) => {
             if (player.playerId !== excludePlayerId) {
-                if (player.ws.readyState === 1) { // WebSocket.OPEN
+                if (player.ws.readyState === 1) {
                     try {
                         player.ws.send(JSON.stringify(message));
                         console.log(`  ✅ 成功發送給玩家 ${player.playerId} (${index + 1}/${this.players.length})`);
@@ -92,10 +95,104 @@ class GameRoom {
     isFull() {
         return this.players.length === this.maxPlayers;
     }
+
+    // 開始隨機決定順序
+    startOrderDecision() {
+        console.log(`🎲 房間 ${this.roomId} 開始隨機決定玩家順序`);
+
+        this.orderDecisionState.isDeciding = true;
+        this.orderDecisionState.confirmations.clear();
+
+        // 廣播開始決定順序
+        this.broadcast({
+            type: 'ORDER_DECISION_START',
+            payload: {
+                players: this.players.map(p => p.playerId)
+            }
+        });
+
+        // 延遲 2 秒後顯示結果（模擬隨機過程）
+        setTimeout(() => {
+            this.decideOrder();
+        }, 2000);
+    }
+
+    // 決定順序並廣播結果
+    decideOrder() {
+        const playerIds = this.players.map(p => p.playerId);
+
+        // 隨機決定誰先手
+        const firstPlayerIndex = Math.random() < 0.5 ? 0 : 1;
+        const firstPlayer = playerIds[firstPlayerIndex];
+        const secondPlayer = playerIds[1 - firstPlayerIndex];
+
+        this.orderDecisionState.result = {
+            firstPlayer,
+            secondPlayer,
+            order: [firstPlayer, secondPlayer]
+        };
+
+        console.log(`🎲 房間 ${this.roomId} 順序決定結果:`, this.orderDecisionState.result);
+
+        // 廣播結果
+        this.broadcast({
+            type: 'ORDER_DECISION_RESULT',
+            payload: this.orderDecisionState.result
+        });
+    }
+
+    // 處理玩家確認
+    confirmOrder(playerId) {
+        if (!this.orderDecisionState.result) {
+            console.warn(`⚠️ 玩家 ${playerId} 嘗試確認，但順序尚未決定`);
+            return;
+        }
+
+        this.orderDecisionState.confirmations.add(playerId);
+        console.log(`✅ 玩家 ${playerId} 已確認順序，目前確認數: ${this.orderDecisionState.confirmations.size}/2`);
+
+        // 廣播確認狀態
+        this.broadcast({
+            type: 'ORDER_CONFIRMATION_UPDATE',
+            payload: {
+                confirmations: Array.from(this.orderDecisionState.confirmations),
+                waitingFor: this.players
+                    .map(p => p.playerId)
+                    .filter(id => !this.orderDecisionState.confirmations.has(id))
+            }
+        });
+
+        // 如果所有玩家都確認了，開始遊戲
+        if (this.orderDecisionState.confirmations.size === 2) {
+            setTimeout(() => {
+                this.startGameWithOrder();
+            }, 1000);
+        }
+    }
+
+    // 根據決定的順序開始遊戲
+    startGameWithOrder() {
+        const { order } = this.orderDecisionState.result;
+        const gameState = createGameStateWithOrder(this.roomId, order);
+        this.gameState = gameState;
+
+        console.log(`🚀 遊戲開始，房間 ${this.roomId}，順序：`, order);
+
+        this.broadcast({
+            type: 'GAME_STARTED',
+            payload: gameState
+        });
+
+        // 重置順序決定狀態
+        this.orderDecisionState = {
+            isDeciding: false,
+            result: null,
+            confirmations: new Set()
+        };
+    }
 }
 
 wss.on('connection', (ws, req) => {
-    // 記錄連接來源
     const origin = req.headers.origin;
     console.log('🔌 客戶端已連接，來源:', origin);
 
@@ -113,6 +210,9 @@ wss.on('connection', (ws, req) => {
                     break;
                 case 'CREATE_ROOM':
                     handleCreateRoom(ws, message.payload);
+                    break;
+                case 'CONFIRM_ORDER':
+                    handleConfirmOrder(ws, message.payload);
                     break;
                 case 'GAME_ACTION':
                     handleGameAction(ws, message.payload);
@@ -147,17 +247,14 @@ wss.on('connection', (ws, req) => {
 
         console.log(`🏠 房間 ${roomId} 已建立，創建者：${currentPlayerId}，來源：${origin}`);
 
-        // 發送房間建立成功回應
         ws.send(JSON.stringify({
             type: 'ROOM_CREATED',
             payload: { roomId, playerId: currentPlayerId }
         }));
 
-        // 初始化等待中的遊戲狀態
         const initialGameState = createWaitingGameState(roomId, [currentPlayerId]);
         room.gameState = initialGameState;
 
-        // 立即廣播初始狀態給房間內所有玩家
         room.broadcast({
             type: 'GAME_STATE_UPDATED',
             payload: initialGameState
@@ -191,30 +288,32 @@ wss.on('connection', (ws, req) => {
 
         console.log(`👤 玩家 ${playerId} 加入房間 ${roomId}，來源：${origin}`);
 
-        // 通知加入者
         ws.send(JSON.stringify({
             type: 'PLAYER_JOINED',
             payload: { playerId, roomId }
         }));
 
-        // 更新遊戲狀態包含兩位玩家
         const updatedGameState = createWaitingGameState(roomId, room.players.map(p => p.playerId));
         room.gameState = updatedGameState;
 
-        // 廣播更新的狀態給所有玩家
         room.broadcast({
             type: 'GAME_STATE_UPDATED',
             payload: updatedGameState
         });
 
-        // 如果房間滿了，延遲開始遊戲確保狀態更新
+        // 如果房間滿了，開始隨機決定順序
         if (room.isFull()) {
-            console.log(`🎮 房間 ${roomId} 已滿，準備開始遊戲`);
-
-            // 延遲 500ms 開始遊戲，確保所有玩家都收到狀態更新
+            console.log(`🎮 房間 ${roomId} 已滿，開始隨機決定順序`);
             setTimeout(() => {
-                startGame(room);
-            }, 500);
+                room.startOrderDecision();
+            }, 1000);
+        }
+    }
+
+    function handleConfirmOrder(ws, payload) {
+        const room = gameRooms.get(currentRoomId);
+        if (room && currentPlayerId) {
+            room.confirmOrder(currentPlayerId);
         }
     }
 
@@ -247,22 +346,6 @@ wss.on('connection', (ws, req) => {
     }
 });
 
-function startGame(room) {
-    const playerIds = room.players.map(p => p.playerId);
-    const gameState = createGameState(room.roomId, playerIds);
-    room.gameState = gameState;
-
-    console.log(`🚀 遊戲開始，房間 ${room.roomId}，玩家：`, playerIds);
-
-    // 廣播遊戲開始給所有玩家
-    room.broadcast({
-        type: 'GAME_STARTED',
-        payload: gameState
-    });
-
-    console.log(`📢 GAME_STARTED 已廣播給 ${room.players.length} 個玩家`);
-}
-
 function createWaitingGameState(gameId, playerIds) {
     return {
         gameId,
@@ -275,14 +358,14 @@ function createWaitingGameState(gameId, playerIds) {
     };
 }
 
-function createGameState(gameId, playerIds) {
-    const players = playerIds.map(id => createPlayerWithCards(id));
+function createGameStateWithOrder(gameId, orderedPlayerIds) {
+    const players = orderedPlayerIds.map(id => createPlayerWithCards(id));
 
     return {
         gameId,
         players,
         geishas: createInitialGeishas(),
-        currentPlayer: 0,
+        currentPlayer: 0, // 第一個玩家開始
         phase: 'playing',
         round: 1,
         winner: null
@@ -337,8 +420,8 @@ function generateInitialHand() {
 
 function createInitialGeishas() {
     return [
-        { id: 1, name: '洋子', charmPoints: 2, controlledBy: null },
-        { id: 2, name: '彩葉', charmPoints: 2, controlledBy: null },
+        { id: 1, name: '洋子AA', charmPoints: 2, controlledBy: null },
+        { id: 2, name: '彩葉XXXX', charmPoints: 2, controlledBy: null },
         { id: 3, name: '琉璃', charmPoints: 2, controlledBy: null },
         { id: 4, name: '杏樹', charmPoints: 3, controlledBy: null },
         { id: 5, name: '知世', charmPoints: 3, controlledBy: null },
@@ -351,7 +434,6 @@ function generateRoomId() {
     return Math.random().toString(36).substring(2, 8).toUpperCase();
 }
 
-// 使用動態端口
 const PORT = process.env.PORT || 3001;
 
 server.listen(PORT, '0.0.0.0', () => {
