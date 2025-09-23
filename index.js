@@ -56,11 +56,21 @@ class GameRoom {
     }
 
     addPlayer(playerId, ws) {
+        const existingPlayer = this.players.find(player => player.playerId === playerId); // 讓重連玩家沿用原本的 socket
+
+        if (existingPlayer) {
+            existingPlayer.ws = ws;
+            console.log(`♻️ 玩家 ${playerId} 重新連線房間 ${this.roomId}`);
+            return true;
+        }
+
         if (this.players.length < this.maxPlayers) {
             this.players.push({ playerId, ws });
             console.log(`✅ 玩家 ${playerId} 加入房間 ${this.roomId}，當前玩家數：${this.players.length}`);
             return true;
         }
+
+        console.warn(`⚠️ 玩家 ${playerId} 嘗試加入已滿的房間 ${this.roomId}`);
         return false;
     }
 
