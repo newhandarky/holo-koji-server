@@ -3,14 +3,14 @@ import express from 'express';
 import { createServer } from 'http';
 import { WebSocketServer } from 'ws';
 import cors from 'cors';
-import {
-    GameState,
-    Player,
-    ItemCard,
-    ActionType,
-    PendingInteraction,
-    GameAction
-} from 'game-shared-types';
+
+/**
+ * @typedef {import('game-shared-types').GameState} GameState
+ * @typedef {import('game-shared-types').Player} Player
+ * @typedef {import('game-shared-types').ItemCard} ItemCard
+ * @typedef {import('game-shared-types').PendingInteraction} PendingInteraction
+ * @typedef {import('game-shared-types').GameAction} GameAction
+ */
 
 const app = express();
 const server = createServer(app);
