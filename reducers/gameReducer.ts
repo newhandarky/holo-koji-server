@@ -19,8 +19,7 @@ export const initialState: GameState = {
         result: undefined,
         confirmations: [],
         waitingFor: [],
-        currentPlayer: '',
-        onConfirm: () => { }
+        currentPlayer: ''
     }
 };
 
@@ -65,8 +64,7 @@ export const gameReducer = (state: GameState, action: GameAction): GameState => 
                     result: undefined,
                     confirmations: [],
                     waitingFor: [],
-                    currentPlayer: action.payload.players[0],
-                    onConfirm: () => { }
+                    currentPlayer: action.payload.players[0]
                 }
             };
 
@@ -108,6 +106,17 @@ export const gameReducer = (state: GameState, action: GameAction): GameState => 
             }
 
             return updatedOrderDecision;
+
+        case 'SYNC_SERVER_STATE':
+            console.log('🌐 [Reducer] ===== 處理 SYNC_SERVER_STATE =====');
+            return {
+                ...state,
+                ...action.payload,
+                orderDecision: {
+                    ...state.orderDecision,
+                    ...action.payload.orderDecision,
+                }
+            };
 
         case 'PLAY_ACTION':
             console.log('🎯 [Reducer] ===== 處理 PLAY_ACTION =====');
