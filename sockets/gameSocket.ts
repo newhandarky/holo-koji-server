@@ -2,7 +2,9 @@
 import { Server as SocketServer, Socket } from 'socket.io';
 import { gameManager } from '../models/GameManager';
 import {
-    Player, GameAction, WebSocketMessage,
+    Player,
+    GameAction,
+    WebSocketMessage,
     WebSocketEventType,
     GameStartedPayload,
     PlayerJoinedPayload,
@@ -26,21 +28,48 @@ export function setupGameSocket(io: SocketServer) {
             if (!game) {
                 game = gameManager.createGame(gameId);
                 console.log(`🎮 [Socket.IO] 為房間 ${gameId} 創建新遊戲`);
+
+                // 發送 ROOM_CREATED 事件
+                socket.emit('ROOM_CREATED', {
+                    type: 'ROOM_CREATED',
+                    payload: { gameId, gameState: game }
+                } as WebSocketMessage);
             }
 
             // 添加玩家到遊戲
-            const updatedGame = gameManager.addPlayer(gameId, {
-                ...playerData,
-                socketId: socket.id
-            });
+            // const updatedGame = gameManager.addPlayer(gameId, {
+            //     ...playerData,
+            //     socketId: socket.id
+            // });
 
+            const updatedGame = gameManager.addPlayer(gameId, playerData);
+
+            // if (updatedGame) {
+            //     // 對應您原本的 GAME_STARTED 事件
+            //     io.to(gameId).emit('GAME_STATE_UPDATE', {
+            //         type: 'GAME_STARTED',
+            //         payload: updatedGame
+            //     });
+            //     console.log(`✅ [Socket.IO] 遊戲狀態已廣播給房間 ${gameId}`);
+            // }
             if (updatedGame) {
-                // 對應您原本的 GAME_STARTED 事件
-                io.to(gameId).emit('GAME_STATE_UPDATE', {
+                // 通知新玩家遊戲已開始
+                socket.emit('GAME_STARTED', {
                     type: 'GAME_STARTED',
-                    payload: updatedGame
-                });
-                console.log(`✅ [Socket.IO] 遊戲狀態已廣播給房間 ${gameId}`);
+                    payload: {
+                        gameState: updatedGame,
+                        message: `歡迎加入遊戲 ${gameId}`
+                    } as GameStartedPayload
+                } as WebSocketMessage<GameStartedPayload>);
+
+                // 通知房間內其他玩家有新玩家加入
+                socket.to(gameId).emit('PLAYER_JOINED', {
+                    type: 'PLAYER_JOINED',
+                    payload: {
+                        player: playerData,
+                        gameState: updatedGame
+                    } as PlayerJoinedPayload
+                } as WebSocketMessage<PlayerJoinedPayload>);
             }
         });
 
@@ -56,28 +85,66 @@ export function setupGameSocket(io: SocketServer) {
                 io.to(gameId).emit('GAME_STATE_UPDATE', {
                     type: 'STATE_CHANGED',
                     payload: updatedGame
-                });
+                } as WebSocketMessage<GameState>);
             }
         });
 
         // 3. 處理順序決定確認 (從您的 WebSocket 邏輯推測)
-        socket.on('CONFIRM_ORDER', (data: { gameId: string; playerId: string }) => {
-            const { gameId, playerId } = data;
-            console.log(`✅ [Socket.IO] 玩家 ${playerId} 確認順序 in ${gameId}`);
+        // socket.on('CONFIRM_ORDER', (data: { gameId: string; playerId: string }) => {
+        //     const { gameId, playerId } = data;
+        //     console.log(`✅ [Socket.IO] 玩家 ${playerId} 確認順序 in ${gameId}`);
+
+        //     const updatedGame = gameManager.executeAction(gameId, {
+        //         type: 'UPDATE_ORDER_CONFIRMATIONS',
+        //         payload: {
+        //             confirmations: [playerId], // 簡化處理，實際需要根據當前狀態
+        //             waitingFor: []
+        //         }
+        //     });
+
+        //     if (updatedGame) {
+        //         io.to(gameId).emit('GAME_STATE_UPDATE', {
+        //             type: 'ORDER_CONFIRMED',
+        //             payload: updatedGame
+        //         });
+        //     }
+        // });
+        socket.on('START_ORDER_DECISION', (data: { gameId: string; players: string[] }) => {
+            const { gameId, players } = data;
 
             const updatedGame = gameManager.executeAction(gameId, {
-                type: 'UPDATE_ORDER_CONFIRMATIONS',
-                payload: {
-                    confirmations: [playerId], // 簡化處理，實際需要根據當前狀態
-                    waitingFor: []
-                }
+                type: 'START_ORDER_DECISION',
+                payload: { players }
             });
 
             if (updatedGame) {
-                io.to(gameId).emit('GAME_STATE_UPDATE', {
-                    type: 'ORDER_CONFIRMED',
-                    payload: updatedGame
-                });
+                io.to(gameId).emit('ORDER_DECISION_START', {
+                    type: 'ORDER_DECISION_START',
+                    payload: {
+                        players,
+                        gameState: updatedGame
+                    }
+                } as WebSocketMessage);
+            }
+        });
+
+        // 順序決定結果
+        socket.on('ORDER_DECISION_COMPLETE', (data: { gameId: string; result: any }) => {
+            const { gameId, result } = data;
+
+            const updatedGame = gameManager.executeAction(gameId, {
+                type: 'ORDER_DECISION_RESULT',
+                payload: result
+            });
+
+            if (updatedGame) {
+                io.to(gameId).emit('ORDER_DECISION_RESULT', {
+                    type: 'ORDER_DECISION_RESULT',
+                    payload: {
+                        ...result,
+                        gameState: updatedGame
+                    } as OrderDecisionResultPayload
+                } as WebSocketMessage<OrderDecisionResultPayload>);
             }
         });
 
