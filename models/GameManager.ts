@@ -25,7 +25,11 @@ class GameManager {
             discardedCards: player.discardedCards ?? [],
             actionTokens: (player.actionTokens && player.actionTokens.length > 0)
                 ? player.actionTokens
-                : this.createDefaultActionTokens()
+                : this.createDefaultActionTokens(),
+            score: player.score ?? {
+                charm: 0,
+                tokens: 0
+            }
         };
     }
 

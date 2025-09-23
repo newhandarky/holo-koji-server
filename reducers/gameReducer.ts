@@ -20,7 +20,12 @@ export const initialState: GameState = {
         confirmations: [],
         waitingFor: [],
         currentPlayer: ''
-    }
+    },
+    drawPile: [],
+    discardPile: [],
+    removedCard: undefined,
+    pendingInteraction: null,
+    lastAction: undefined
 };
 
 export const gameReducer = (state: GameState, action: GameAction): GameState => {
