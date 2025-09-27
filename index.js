@@ -3,6 +3,7 @@ import express from 'express';
 import { createServer } from 'http';
 import { WebSocketServer } from 'ws';
 import cors from 'cors';
+import { createRandomizedGeishas, createBaseGeishas } from './utils/gameUtils.js';
 
 const app = express();
 const server = createServer(app);
@@ -53,15 +54,25 @@ class GameRoom {
             result: null,
             confirmations: new Set()
         };
+        this.baseGeishas = null;
     }
 
     addPlayer(playerId, ws) {
-        if (this.players.length < this.maxPlayers) {
-            this.players.push({ playerId, ws });
-            console.log(`✅ 玩家 ${playerId} 加入房間 ${this.roomId}，當前玩家數：${this.players.length}`);
-            return true;
+        const existingPlayer = this.players.find(player => player.playerId === playerId);
+
+        if (existingPlayer) {
+            existingPlayer.ws = ws;
+            console.log(`♻️ 玩家 ${playerId} 重新連線房間 ${this.roomId}`);
+            return 'existing';
         }
-        return false;
+
+        if (this.players.length >= this.maxPlayers) {
+            return 'full';
+        }
+
+        this.players.push({ playerId, ws });
+        console.log(`✅ 玩家 ${playerId} 加入房間 ${this.roomId}，當前玩家數：${this.players.length}`);
+        return 'added';
     }
 
     removePlayer(playerId) {
@@ -173,7 +184,10 @@ class GameRoom {
     // 根據決定的順序開始遊戲
     startGameWithOrder() {
         const { order } = this.orderDecisionState.result;
-        const gameState = createGameStateWithOrder(this.roomId, order);
+        if (!this.baseGeishas) {
+            this.baseGeishas = createRandomizedGeishas();
+        }
+        const gameState = createGameStateWithOrder(this.roomId, order, this.baseGeishas);
         this.gameState = gameState;
 
         console.log(`🚀 遊戲開始，房間 ${this.roomId}，順序：`, order);
@@ -243,6 +257,8 @@ wss.on('connection', (ws, req) => {
         currentPlayerId = payload.playerId;
         currentRoomId = roomId;
 
+        room.baseGeishas = createRandomizedGeishas();
+
         room.addPlayer(currentPlayerId, ws);
 
         console.log(`🏠 房間 ${roomId} 已建立，創建者：${currentPlayerId}，來源：${origin}`);
@@ -252,7 +268,7 @@ wss.on('connection', (ws, req) => {
             payload: { roomId, playerId: currentPlayerId }
         }));
 
-        const initialGameState = createWaitingGameState(roomId, [currentPlayerId]);
+        const initialGameState = createWaitingGameState(roomId, [currentPlayerId], room.baseGeishas);
         room.gameState = initialGameState;
 
         room.broadcast({
@@ -272,8 +288,12 @@ wss.on('connection', (ws, req) => {
             }));
             return;
         }
+        if (!room.baseGeishas) {
+            room.baseGeishas = createRandomizedGeishas();
+        }
+        const result = room.addPlayer(playerId, ws);
 
-        if (room.isFull()) {
+        if (result === 'full') {
             ws.send(JSON.stringify({
                 type: 'ERROR',
                 payload: { message: '房間已滿' }
@@ -284,7 +304,16 @@ wss.on('connection', (ws, req) => {
         currentPlayerId = playerId;
         currentRoomId = roomId;
 
-        room.addPlayer(playerId, ws);
+        if (result === 'existing') {
+            console.log(`♻️ 玩家 ${playerId} 已在房間 ${roomId}，同步當前狀態`);
+            if (room.gameState) {
+                ws.send(JSON.stringify({
+                    type: 'GAME_STATE_UPDATED',
+                    payload: room.gameState
+                }));
+            }
+            return;
+        }
 
         console.log(`👤 玩家 ${playerId} 加入房間 ${roomId}，來源：${origin}`);
 
@@ -293,7 +322,7 @@ wss.on('connection', (ws, req) => {
             payload: { playerId, roomId }
         }));
 
-        const updatedGameState = createWaitingGameState(roomId, room.players.map(p => p.playerId));
+        const updatedGameState = createWaitingGameState(roomId, room.players.map(p => p.playerId), room.baseGeishas);
         room.gameState = updatedGameState;
 
         room.broadcast({
@@ -301,8 +330,7 @@ wss.on('connection', (ws, req) => {
             payload: updatedGameState
         });
 
-        // 如果房間滿了，開始隨機決定順序
-        if (room.isFull()) {
+        if (room.players.length === room.maxPlayers) {
             console.log(`🎮 房間 ${roomId} 已滿，開始隨機決定順序`);
             setTimeout(() => {
                 room.startOrderDecision();
@@ -346,11 +374,15 @@ wss.on('connection', (ws, req) => {
     }
 });
 
-function createWaitingGameState(gameId, playerIds) {
+function cloneGeishas(geishas) {
+    return geishas.map((geisha) => ({ ...geisha }));
+}
+
+function createWaitingGameState(gameId, playerIds, geishas) {
     return {
         gameId,
         players: playerIds.map(id => createPlayer(id)),
-        geishas: createInitialGeishas(),
+        geishas: cloneGeishas(geishas ?? createBaseGeishas()),
         currentPlayer: 0,
         phase: 'waiting',
         round: 1,
@@ -358,13 +390,13 @@ function createWaitingGameState(gameId, playerIds) {
     };
 }
 
-function createGameStateWithOrder(gameId, orderedPlayerIds) {
+function createGameStateWithOrder(gameId, orderedPlayerIds, geishas) {
     const players = orderedPlayerIds.map(id => createPlayerWithCards(id));
 
     return {
         gameId,
         players,
-        geishas: createInitialGeishas(),
+        geishas: cloneGeishas(geishas ?? createBaseGeishas()),
         currentPlayer: 0, // 第一個玩家開始
         phase: 'playing',
         round: 1,
@@ -385,7 +417,11 @@ function createPlayer(playerId) {
             { type: 'trade-off', used: false },
             { type: 'gift', used: false },
             { type: 'competition', used: false }
-        ]
+        ],
+        score: {
+            charm: 0,
+            tokens: 0
+        }
     };
 }
 
@@ -402,7 +438,11 @@ function createPlayerWithCards(playerId) {
             { type: 'trade-off', used: false },
             { type: 'gift', used: false },
             { type: 'competition', used: false }
-        ]
+        ],
+        score: {
+            charm: 0,
+            tokens: 0
+        }
     };
 }
 
@@ -416,18 +456,6 @@ function generateInitialHand() {
         });
     }
     return cards;
-}
-
-function createInitialGeishas() {
-    return [
-        { id: 1, name: '洋子AA', charmPoints: 2, controlledBy: null },
-        { id: 2, name: '彩葉XXXX', charmPoints: 2, controlledBy: null },
-        { id: 3, name: '琉璃', charmPoints: 2, controlledBy: null },
-        { id: 4, name: '杏樹', charmPoints: 3, controlledBy: null },
-        { id: 5, name: '知世', charmPoints: 3, controlledBy: null },
-        { id: 6, name: '美櫻', charmPoints: 4, controlledBy: null },
-        { id: 7, name: '小雪', charmPoints: 5, controlledBy: null },
-    ];
 }
 
 function generateRoomId() {
