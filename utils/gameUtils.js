@@ -31,12 +31,14 @@ export const createRandomizedGeishas = () => shuffleArray(baseGeishaData).map((g
     controlledBy: null
 }));
 
+// 根據藝妓魅力值建立牌庫（每位藝妓的卡牌數量等於魅力值）
 export const buildDeckForGeishas = (geishas) => {
     /** @type {ItemCard[]} */
     const cards = [];
 
     geishas.forEach((geisha) => {
-        for (let copy = 0; copy < 3; copy += 1) {
+        const copies = geisha.charmPoints ?? 0;
+        for (let copy = 0; copy < copies; copy += 1) {
             cards.push({
                 id: `card-${geisha.id}-${copy}-${Math.random().toString(36).slice(2, 8)}`,
                 geishaId: geisha.id,
