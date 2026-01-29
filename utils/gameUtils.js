@@ -3,12 +3,41 @@
  * @typedef {import('game-shared-types').ItemCard} ItemCard
  */
 
-export const geishaNames = ['白上フブキ', '百鬼あやめ', '大神ミオ', 'さくらみこ', '風真いろは', '儒烏風亭らでん', '一伊那尓栖'];
+export const geishaData = [
+    {
+        name: '一伊那尓栖',
+        imageUrl: 'https://hololive.hololivepro.com/wp-content/uploads/2020/07/Ninomae-Inanis_list_thumb.png'
+    },
+    {
+        name: '大神ミオ',
+        imageUrl: 'https://hololive.hololivepro.com/wp-content/uploads/2020/06/Ookami-Mio_thumb.png'
+    },
+    {
+        name: '百鬼あやめ',
+        imageUrl: 'https://hololive.hololivepro.com/wp-content/uploads/2020/06/Nakiri-Ayame_list_thumb.png'
+    },
+    {
+        name: '白上フブキ',
+        imageUrl: 'https://hololive.hololivepro.com/wp-content/uploads/2020/06/Shirakami-Fubuki_list_thumb.png'
+    },
+    {
+        name: 'さくらみこ',
+        imageUrl: 'https://hololive.hololivepro.com/wp-content/uploads/2020/06/Sakura-Miko_list_thumb.png'
+    },
+    {
+        name: '風真いろは',
+        imageUrl: 'https://hololive.hololivepro.com/wp-content/uploads/2020/07/Kazama-Iroha_list_thumb.png'
+    },
+    {
+        name: '儒烏風亭らでん',
+        imageUrl: 'https://hololive.hololivepro.com/wp-content/uploads/2023/09/Juufuutei-Raden_list_thumb.png'
+    }
+];
 export const charmPointsDistribution = [2, 2, 2, 3, 3, 4, 5];
 
-const baseGeishaData = geishaNames.map((name, index) => ({
+const baseGeishaData = geishaData.map((geisha, index) => ({
     id: index + 1,
-    name,
+    name: geisha.name,
     charmPoints: charmPointsDistribution[index]
 }));
 

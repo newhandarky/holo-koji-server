@@ -49,6 +49,7 @@ class GameRoom {
         this.players = [];
         this.gameState = null;
         this.maxPlayers = 2;
+        this.hostId = null;
         this.orderDecisionState = {
             isDeciding: false,
             result: null,
@@ -231,6 +232,7 @@ class GameRoom {
 
         this.gameState = {
             gameId: this.roomId,
+            hostId: this.hostId,
             players: playersState,
             geishas: geishasClone,
             currentPlayer: 0,
@@ -1057,6 +1059,7 @@ class GameRoom {
             return;
         }
 
+        // 贈予結果：卡片直接加入各自的藝妓區（以 playedCards 代表）
         receiver.playedCards.push(chosenCard);
 
         const remaining = pending.offeredCards.filter(card => card.id !== chosenCardId);
@@ -1177,6 +1180,7 @@ class GameRoom {
             return;
         }
 
+        // 競爭結果：卡片直接加入各自的藝妓區（以 playedCards 代表）
         receiver.playedCards.push(...selectedGroup);
         initiator.playedCards.push(...opponentGroup);
 
@@ -1257,6 +1261,7 @@ wss.on('connection', (ws, req) => {
 
         currentPlayerId = payload.playerId;
         currentRoomId = roomId;
+        room.hostId = currentPlayerId;
 
         room.baseGeishas = createRandomizedGeishas();
 
@@ -1270,6 +1275,7 @@ wss.on('connection', (ws, req) => {
         }));
 
         const initialGameState = createWaitingGameState(roomId, [currentPlayerId], room.baseGeishas);
+        initialGameState.hostId = room.hostId;
         room.gameState = initialGameState;
 
         room.broadcastGameState();
@@ -1331,6 +1337,7 @@ wss.on('connection', (ws, req) => {
         }));
 
         const updatedGameState = createWaitingGameState(roomId, room.players.map(p => p.playerId), room.baseGeishas);
+        updatedGameState.hostId = room.hostId;
         room.gameState = updatedGameState;
 
         room.broadcastGameState();
@@ -1411,6 +1418,7 @@ function cloneGeishas(geishas) {
 function createWaitingGameState(gameId, playerIds, geishas) {
     return {
         gameId,
+        hostId: null,
         players: playerIds.map(id => createPlayer(id)),
         geishas: cloneGeishas(geishas ?? createBaseGeishas()),
         currentPlayer: 0,
@@ -1454,6 +1462,7 @@ function createGameStateWithOrder(gameId, orderedPlayerIds, geishas, existingSta
     return {
         gameState: {
             gameId,
+            hostId: previousState.hostId ?? null,
             players,
             geishas: cloneGeishas(baseGeishas),
             currentPlayer: 0,
