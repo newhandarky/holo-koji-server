@@ -7,31 +7,31 @@
 export const geishaData = [
     {
         name: '一伊那尓栖',
-        imageUrl: 'https://hololive.hololivepro.com/wp-content/uploads/2020/07/Ninomae-Inanis_list_thumb.png'
+        imageUrl: '/images/geisha/ninomae-inanis.jpg'
     },
     {
         name: '大神ミオ',
-        imageUrl: 'https://hololive.hololivepro.com/wp-content/uploads/2020/06/Ookami-Mio_thumb.png'
+        imageUrl: '/images/geisha/ookami-mio.jpg'
     },
     {
         name: '百鬼あやめ',
-        imageUrl: 'https://hololive.hololivepro.com/wp-content/uploads/2020/06/Nakiri-Ayame_list_thumb.png'
+        imageUrl: '/images/geisha/nakiri-ayame.jpg'
     },
     {
         name: '白上フブキ',
-        imageUrl: 'https://hololive.hololivepro.com/wp-content/uploads/2020/06/Shirakami-Fubuki_list_thumb.png'
+        imageUrl: '/images/geisha/shirakami-fubuki.jpg'
     },
     {
         name: 'さくらみこ',
-        imageUrl: 'https://hololive.hololivepro.com/wp-content/uploads/2020/06/Sakura-Miko_list_thumb.png'
+        imageUrl: '/images/geisha/sakura-miko.jpg'
     },
     {
         name: '風真いろは',
-        imageUrl: 'https://hololive.hololivepro.com/wp-content/uploads/2020/07/Kazama-Iroha_list_thumb.png'
+        imageUrl: '/images/geisha/kazama-iroha.jpg'
     },
     {
         name: '儒烏風亭らでん',
-        imageUrl: 'https://hololive.hololivepro.com/wp-content/uploads/2023/09/Juufuutei-Raden_list_thumb.png'
+        imageUrl: '/images/geisha/juufuutei-raden.jpg'
     }
 ];
 // 魅力值分布（對應藝妓順序）
