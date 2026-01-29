@@ -5,6 +5,18 @@ import { WebSocketServer } from 'ws';
 import cors from 'cors';
 import { createRandomizedGeishas, createBaseGeishas, buildDeckForGeishas } from './utils/gameUtils.js';
 
+// NPC 設定（難度與思考時間）
+const NPC_DIFFICULTY_LABEL = {
+    easy: '簡單',
+    medium: '中等',
+    hard: '偏強'
+};
+const NPC_THINKING_DELAY = {
+    easy: 1400,
+    medium: 1000,
+    hard: 700
+};
+
 // 建立 Express 與 HTTP 伺服器
 const app = express();
 const server = createServer(app);
@@ -70,6 +82,51 @@ class GameRoom {
         this.dealSequence = [];
         // 上一輪起始玩家 ID
         this.lastRoundStarterId = null;
+        // 回合結算延遲計時器
+        this.roundResolveTimer = null;
+        // NPC 玩家資訊
+        this.npcId = null;
+        this.npcDifficulty = null;
+        this.npcActionTimer = null;
+        this.npcResponseTimer = null;
+    }
+
+    // 判斷是否為 NPC 玩家
+    isNpcPlayerId(playerId) {
+        return Boolean(this.npcId) && playerId === this.npcId;
+    }
+
+    // 建立 NPC 玩家（使用假連線避免廣播錯誤）
+    addNpcPlayer(difficulty = 'easy') {
+        if (this.npcId || this.players.length >= this.maxPlayers) {
+            return null;
+        }
+
+        const label = NPC_DIFFICULTY_LABEL[difficulty] ?? NPC_DIFFICULTY_LABEL.easy;
+        const npcId = `NPC-${label}`;
+        const npcSocket = {
+            readyState: 1,
+            send: () => { }
+        };
+
+        this.players.push({ playerId: npcId, ws: npcSocket, isNpc: true });
+        this.npcId = npcId;
+        this.npcDifficulty = difficulty;
+
+        console.log(`🤖 NPC 玩家加入房間 ${this.roomId}，難度：${label}`);
+        return npcId;
+    }
+
+    // 清除 NPC 計時器（避免重複執行）
+    clearNpcTimers() {
+        if (this.npcActionTimer) {
+            clearTimeout(this.npcActionTimer);
+            this.npcActionTimer = null;
+        }
+        if (this.npcResponseTimer) {
+            clearTimeout(this.npcResponseTimer);
+            this.npcResponseTimer = null;
+        }
     }
 
     // 將訊息傳送給指定玩家（避免廣播時洩漏資訊）
@@ -359,6 +416,14 @@ class GameRoom {
         if (this.gameState) {
             this.broadcastGameState();
         }
+
+        // 若有 NPC，讓 NPC 自動確認順序
+        if (this.npcId) {
+            const delay = NPC_THINKING_DELAY[this.npcDifficulty] ?? NPC_THINKING_DELAY.easy;
+            setTimeout(() => {
+                this.confirmOrder(this.npcId);
+            }, delay);
+        }
     }
 
     // 處理玩家確認
@@ -473,6 +538,15 @@ class GameRoom {
             .find(id => id !== playerId) ?? null;
     }
 
+    // 取得對手玩家狀態
+    getOpponentState(playerId) {
+        const opponentId = this.getOpponentId(playerId);
+        if (!opponentId) {
+            return null;
+        }
+        return this.getPlayerState(opponentId);
+    }
+
     // 標記玩家行動指示物已使用
     markActionTokenUsed(player, actionType) {
         const token = player.actionTokens.find(item => item.type === actionType);
@@ -536,6 +610,444 @@ class GameRoom {
         this.gameState.lastAction = undefined;
 
         this.broadcastGameState();
+
+        // 若輪到 NPC，安排自動行動
+        if (this.isNpcPlayerId(currentPlayer.id)) {
+            this.scheduleNpcTurn();
+        }
+    }
+
+    // 安排 NPC 行動
+    scheduleNpcTurn() {
+        if (!this.gameState || !this.npcId) {
+            return;
+        }
+
+        const currentPlayer = this.gameState.players[this.gameState.currentPlayer];
+        if (!currentPlayer || currentPlayer.id !== this.npcId) {
+            return;
+        }
+
+        if (this.gameState.phase !== 'playing' || this.gameState.pendingInteraction) {
+            return;
+        }
+
+        const delay = NPC_THINKING_DELAY[this.npcDifficulty] ?? NPC_THINKING_DELAY.easy;
+        if (this.npcActionTimer) {
+            clearTimeout(this.npcActionTimer);
+        }
+
+        this.npcActionTimer = setTimeout(() => {
+            this.npcActionTimer = null;
+            this.performNpcAction();
+        }, delay);
+    }
+
+    // 安排 NPC 回應互動（贈予/競爭）
+    scheduleNpcResponse() {
+        if (!this.gameState || !this.npcId) {
+            return;
+        }
+
+        const pending = this.gameState.pendingInteraction;
+        if (!pending || pending.targetPlayerId !== this.npcId) {
+            return;
+        }
+
+        const delay = NPC_THINKING_DELAY[this.npcDifficulty] ?? NPC_THINKING_DELAY.easy;
+        if (this.npcResponseTimer) {
+            clearTimeout(this.npcResponseTimer);
+        }
+
+        this.npcResponseTimer = setTimeout(() => {
+            this.npcResponseTimer = null;
+            this.performNpcResponse();
+        }, delay);
+    }
+
+    // 取得藝妓的魅力值
+    getGeishaCharmPoints(geishaId) {
+        return this.gameState?.geishas?.find(geisha => geisha.id === geishaId)?.charmPoints ?? 0;
+    }
+
+    // 建立藝妓計數快照（用於 AI 評估）
+    buildGeishaCountSnapshot(npcPlayer, opponentPlayer) {
+        const snapshot = new Map();
+        const geishas = this.gameState?.geishas ?? [];
+
+        geishas.forEach((geisha) => {
+            const npcCount = npcPlayer.playedCards.filter(card => card.geishaId === geisha.id).length;
+            const oppCount = opponentPlayer.playedCards.filter(card => card.geishaId === geisha.id).length;
+            snapshot.set(geisha.id, {
+                npc: npcCount,
+                opp: oppCount,
+                charm: geisha.charmPoints
+            });
+        });
+
+        return snapshot;
+    }
+
+    // 計算單張卡片對指定玩家的價值（考慮追趕與翻盤）
+    getCardUtility(snapshot, geishaId, isNpc) {
+        const entry = snapshot.get(geishaId);
+        if (!entry) {
+            return 0;
+        }
+
+        const myCount = isNpc ? entry.npc : entry.opp;
+        const oppCount = isNpc ? entry.opp : entry.npc;
+        const charm = entry.charm;
+
+        if (myCount + 1 > oppCount && myCount <= oppCount) {
+            return charm * 4; // 翻盤或搶先的價值最高
+        }
+
+        if (myCount + 1 === oppCount) {
+            return charm * 2; // 追平有一定價值
+        }
+
+        return charm; // 其他情況以魅力值基礎評估
+    }
+
+    // 計算當前分數差（AI 評估用）
+    evaluateSnapshot(snapshot) {
+        let npcScore = 0;
+        let oppScore = 0;
+
+        snapshot.forEach((entry) => {
+            const base = entry.charm * 2;
+            const diff = entry.npc - entry.opp;
+
+            npcScore += base + diff * 3;
+            oppScore += base - diff * 3;
+        });
+
+        return npcScore - oppScore;
+    }
+
+    // 將卡片套用到快照（模擬結果）
+    applyCardsToSnapshot(snapshot, geishaIdList, isNpc) {
+        const next = new Map();
+        snapshot.forEach((value, key) => {
+            next.set(key, { ...value });
+        });
+
+        geishaIdList.forEach((geishaId) => {
+            const entry = next.get(geishaId);
+            if (!entry) {
+                return;
+            }
+            if (isNpc) {
+                entry.npc += 1;
+            } else {
+                entry.opp += 1;
+            }
+        });
+
+        return next;
+    }
+
+    // NPC 執行回合行動
+    performNpcAction() {
+        if (!this.gameState || !this.npcId) {
+            return;
+        }
+
+        const npcPlayer = this.getPlayerState(this.npcId);
+        if (!npcPlayer || this.gameState.currentPlayer >= this.gameState.players.length) {
+            return;
+        }
+
+        if (this.gameState.players[this.gameState.currentPlayer]?.id !== this.npcId) {
+            return;
+        }
+
+        if (this.gameState.pendingInteraction || this.gameState.phase !== 'playing') {
+            return;
+        }
+
+        const action = this.buildNpcAction(npcPlayer);
+        if (!action) {
+            this.endTurn();
+            return;
+        }
+
+        this.handleAction(this.npcId, action);
+    }
+
+    // NPC 回應互動（贈予/競爭）
+    performNpcResponse() {
+        if (!this.gameState || !this.npcId) {
+            return;
+        }
+
+        const pending = this.gameState.pendingInteraction;
+        if (!pending || pending.targetPlayerId !== this.npcId) {
+            return;
+        }
+
+        if (pending.type === 'GIFT_SELECTION') {
+            const card = this.pickNpcGiftCard(pending.offeredCards);
+            if (card) {
+                this.handleAction(this.npcId, { type: 'RESOLVE_GIFT', payload: { chosenCardId: card.id } });
+            }
+            return;
+        }
+
+        if (pending.type === 'COMPETITION_SELECTION') {
+            const index = this.pickNpcCompetitionGroup(pending.groups);
+            if (index !== null) {
+                this.handleAction(this.npcId, { type: 'RESOLVE_COMPETITION', payload: { chosenGroupIndex: index } });
+            }
+        }
+    }
+
+    // NPC 決定要執行的行動與卡片
+    buildNpcAction(player) {
+        const opponent = this.getOpponentState(player.id);
+        if (!opponent) {
+            return null;
+        }
+
+        const available = player.actionTokens.filter(token => !token.used).map(token => token.type);
+        const hasCards = player.hand.length;
+
+        const candidates = available.filter((type) => {
+            if (type === 'secret') return hasCards >= 1;
+            if (type === 'trade-off') return hasCards >= 2;
+            if (type === 'gift') return hasCards >= 3;
+            if (type === 'competition') return hasCards >= 4;
+            return false;
+        });
+
+        if (candidates.length === 0) {
+            return null;
+        }
+
+        const pickRandom = (list) => list[Math.floor(Math.random() * list.length)];
+        const snapshot = this.buildGeishaCountSnapshot(player, opponent);
+        const sortedByNpcValue = [...player.hand]
+            .sort((a, b) => this.getCardUtility(snapshot, a.geishaId, true) - this.getCardUtility(snapshot, b.geishaId, true));
+
+        let actionType = pickRandom(candidates);
+
+        if (this.npcDifficulty !== 'easy') {
+            if (candidates.includes('competition')) {
+                actionType = 'competition';
+            } else if (candidates.includes('gift')) {
+                actionType = 'gift';
+            } else if (candidates.includes('secret')) {
+                actionType = 'secret';
+            } else {
+                actionType = 'trade-off';
+            }
+        }
+
+        if (actionType === 'secret') {
+            const card = this.npcDifficulty === 'easy'
+                ? pickRandom(player.hand)
+                : sortedByNpcValue[sortedByNpcValue.length - 1];
+            return { type: 'PLAY_SECRET', payload: { cardId: card.id } };
+        }
+
+        if (actionType === 'trade-off') {
+            const selected = this.npcDifficulty === 'easy'
+                ? this.pickRandomCards(player.hand, 2)
+                : this.pickTradeOffCards(player, opponent);
+            return { type: 'PLAY_TRADE_OFF', payload: { cardIds: selected.map(card => card.id) } };
+        }
+
+        if (actionType === 'gift') {
+            const selected = this.npcDifficulty === 'easy'
+                ? this.pickRandomCards(player.hand, 3)
+                : this.pickGiftCards(player, opponent);
+            return { type: 'INITIATE_GIFT', payload: { cardIds: selected.map(card => card.id) } };
+        }
+
+        if (actionType === 'competition') {
+            const picked = this.npcDifficulty === 'easy'
+                ? this.pickRandomCards(player.hand, 4)
+                : this.pickCompetitionCards(player, opponent);
+            const groups = this.npcDifficulty === 'easy'
+                ? this.buildNpcRandomGroups(picked)
+                : this.buildNpcCompetitionGroups(picked, player, opponent);
+            return { type: 'INITIATE_COMPETITION', payload: { groups } };
+        }
+
+        return null;
+    }
+
+    // 隨機挑選指定數量卡片
+    pickRandomCards(cards, count) {
+        const pool = [...cards];
+        const picked = [];
+        while (pool.length > 0 && picked.length < count) {
+            const index = Math.floor(Math.random() * pool.length);
+            picked.push(pool.splice(index, 1)[0]);
+        }
+        return picked;
+    }
+
+    // 競爭分組策略（盡量平衡）
+    buildNpcCompetitionGroups(cards, npcPlayer, opponent) {
+        const snapshot = this.buildGeishaCountSnapshot(npcPlayer, opponent);
+        const sorted = [...cards].sort((a, b) => this.getCardValue(b) - this.getCardValue(a));
+        if (sorted.length < 4) {
+            return [
+                sorted.slice(0, 2).map(card => card.id),
+                sorted.slice(2, 4).map(card => card.id)
+            ].filter(group => group.length > 0);
+        }
+
+        const groupA = [sorted[0], sorted[3]];
+        const groupB = [sorted[1], sorted[2]];
+        const groupOptions = [
+            [groupA.map(card => card.id), groupB.map(card => card.id)],
+            [[sorted[0], sorted[2]].map(card => card.id), [sorted[1], sorted[3]].map(card => card.id)],
+            [[sorted[0], sorted[1]].map(card => card.id), [sorted[2], sorted[3]].map(card => card.id)]
+        ];
+
+        const idToGeisha = new Map(sorted.map(card => [card.id, card.geishaId]));
+
+        // 選擇讓對手最難下決定的一組（最大化最差結果）
+        let best = groupOptions[0];
+        let bestScore = -Infinity;
+
+        groupOptions.forEach((option) => {
+            const [g1, g2] = option;
+            const g1Geishas = g1.map(cardId => idToGeisha.get(cardId)).filter(Boolean);
+            const g2Geishas = g2.map(cardId => idToGeisha.get(cardId)).filter(Boolean);
+            const worst = Math.min(
+                this.evaluateSnapshot(this.applyCardsToSnapshot(snapshot, g1Geishas, false)),
+                this.evaluateSnapshot(this.applyCardsToSnapshot(snapshot, g2Geishas, false))
+            );
+            if (worst > bestScore) {
+                bestScore = worst;
+                best = option;
+            }
+        });
+
+        return best;
+    }
+
+    // 競爭分組（隨機）
+    buildNpcRandomGroups(cards) {
+        const pool = [...cards];
+        for (let i = pool.length - 1; i > 0; i -= 1) {
+            const j = Math.floor(Math.random() * (i + 1));
+            [pool[i], pool[j]] = [pool[j], pool[i]];
+        }
+        return [
+            pool.slice(0, 2).map(card => card.id),
+            pool.slice(2, 4).map(card => card.id)
+        ];
+    }
+
+    // NPC 回應贈予：挑選價值最高的卡片
+    pickNpcGiftCard(cards) {
+        if (!cards || cards.length === 0) {
+            return null;
+        }
+
+        if (this.npcDifficulty === 'easy') {
+            return cards[Math.floor(Math.random() * cards.length)];
+        }
+
+        const npcPlayer = this.getPlayerState(this.npcId);
+        const opponent = this.getOpponentState(this.npcId);
+        if (!npcPlayer || !opponent) {
+            return cards[0];
+        }
+        const snapshot = this.buildGeishaCountSnapshot(npcPlayer, opponent);
+        return [...cards]
+            .sort((a, b) => this.getCardUtility(snapshot, b.geishaId, true) - this.getCardUtility(snapshot, a.geishaId, true))[0];
+    }
+
+    // NPC 回應競爭：挑選總分較高的一組
+    pickNpcCompetitionGroup(groups) {
+        if (!groups || groups.length !== 2) {
+            return null;
+        }
+
+        if (this.npcDifficulty === 'easy') {
+            return Math.random() < 0.5 ? 0 : 1;
+        }
+
+        const npcPlayer = this.getPlayerState(this.npcId);
+        const opponent = this.getOpponentState(this.npcId);
+        if (!npcPlayer || !opponent) {
+            return 0;
+        }
+        const snapshot = this.buildGeishaCountSnapshot(npcPlayer, opponent);
+        const score = (group) => this.evaluateSnapshot(this.applyCardsToSnapshot(snapshot, group.map(card => card.geishaId), true));
+        return score(groups[0]) >= score(groups[1]) ? 0 : 1;
+    }
+
+    // 競爭挑選卡片（偏強：用評分選出最有利的 4 張）
+    pickCompetitionCards(npcPlayer, opponent) {
+        const snapshot = this.buildGeishaCountSnapshot(npcPlayer, opponent);
+        const scored = [...npcPlayer.hand].sort((a, b) => {
+            const diff = this.getCardUtility(snapshot, b.geishaId, true) - this.getCardUtility(snapshot, a.geishaId, true);
+            return diff;
+        });
+        return scored.slice(0, 4);
+    }
+
+    // 贈予挑選卡片（偏強：最大化最差結果）
+    pickGiftCards(npcPlayer, opponent) {
+        const snapshot = this.buildGeishaCountSnapshot(npcPlayer, opponent);
+        const cards = npcPlayer.hand;
+        let bestCombo = cards.slice(0, 3);
+        let bestScore = -Infinity;
+
+        for (let i = 0; i < cards.length; i += 1) {
+            for (let j = i + 1; j < cards.length; j += 1) {
+                for (let k = j + 1; k < cards.length; k += 1) {
+                    const combo = [cards[i], cards[j], cards[k]];
+                    const opponentChoices = combo.map(card => card);
+
+                    const worst = Math.min(...opponentChoices.map((chosen) => {
+                        const npcCards = combo.filter(card => card.id !== chosen.id);
+                        const next = this.applyCardsToSnapshot(
+                            this.applyCardsToSnapshot(snapshot, [chosen.geishaId], false),
+                            npcCards.map(card => card.geishaId),
+                            true
+                        );
+                        return this.evaluateSnapshot(next);
+                    }));
+
+                    if (worst > bestScore) {
+                        bestScore = worst;
+                        bestCombo = combo;
+                    }
+                }
+            }
+        }
+
+        return bestCombo;
+    }
+
+    // 取捨挑選卡片（偏強：犧牲價值最低且可能阻止對手的牌）
+    pickTradeOffCards(npcPlayer, opponent) {
+        const snapshot = this.buildGeishaCountSnapshot(npcPlayer, opponent);
+        const sorted = [...npcPlayer.hand].sort((a, b) => {
+            const npcValueA = this.getCardUtility(snapshot, a.geishaId, true);
+            const npcValueB = this.getCardUtility(snapshot, b.geishaId, true);
+            const oppValueA = this.getCardUtility(snapshot, a.geishaId, false);
+            const oppValueB = this.getCardUtility(snapshot, b.geishaId, false);
+
+            const scoreA = npcValueA - oppValueA * 0.6;
+            const scoreB = npcValueB - oppValueB * 0.6;
+            return scoreA - scoreB;
+        });
+
+        return sorted.slice(0, 2);
+    }
+
+    // 計算卡片價值（以魅力值為基準）
+    getCardValue(card) {
+        return this.getGeishaCharmPoints(card.geishaId);
     }
 
     // 結束回合並切換到下一位可行動玩家
@@ -608,6 +1120,9 @@ class GameRoom {
         // 更新玩家分數資訊
         this.updatePlayerScores();
 
+        // 廣播結算後狀態，讓前端顯示回合結算結果
+        this.broadcastGameState();
+
         // 檢查勝利條件
         const winner = this.determineWinner();
         if (winner) {
@@ -624,7 +1139,14 @@ class GameRoom {
         }
 
         // 準備下一輪（保留好感指示物）
-        this.startNextRound();
+        if (this.roundResolveTimer) {
+            clearTimeout(this.roundResolveTimer);
+        }
+
+        this.roundResolveTimer = setTimeout(() => {
+            this.roundResolveTimer = null;
+            this.startNextRound();
+        }, 2500);
     }
 
     // 驗證回合發牌與牌堆分配是否正確（用於偵錯與防呆）
@@ -1042,6 +1564,11 @@ class GameRoom {
         });
 
         this.broadcastGameState();
+
+        // 若目標是 NPC，安排自動回應
+        if (this.isNpcPlayerId(opponentId)) {
+            this.scheduleNpcResponse();
+        }
     }
 
     // 處理對手回應贈予（選 1 張卡）
@@ -1160,6 +1687,11 @@ class GameRoom {
         });
 
         this.broadcastGameState();
+
+        // 若目標是 NPC，安排自動回應
+        if (this.isNpcPlayerId(opponentId)) {
+            this.scheduleNpcResponse();
+        }
     }
 
     // 處理對手回應競爭（選 1 組）
@@ -1274,6 +1806,9 @@ wss.on('connection', (ws, req) => {
             return;
         }
 
+        const mode = payload.mode === 'npc' ? 'npc' : 'online';
+        const aiDifficulty = payload.aiDifficulty ?? 'easy';
+
         const roomId = generateRoomId();
         const room = new GameRoom(roomId);
         gameRooms.set(roomId, room);
@@ -1286,6 +1821,10 @@ wss.on('connection', (ws, req) => {
 
         room.addPlayer(currentPlayerId, ws);
 
+        if (mode === 'npc') {
+            room.addNpcPlayer(aiDifficulty);
+        }
+
         console.log(`🏠 房間 ${roomId} 已建立，創建者：${currentPlayerId}，來源：${origin}`);
 
         ws.send(JSON.stringify({
@@ -1293,11 +1832,18 @@ wss.on('connection', (ws, req) => {
             payload: { roomId, playerId: currentPlayerId }
         }));
 
-        const initialGameState = createWaitingGameState(roomId, [currentPlayerId], room.baseGeishas);
+        const initialGameState = createWaitingGameState(roomId, room.players.map(p => p.playerId), room.baseGeishas);
         initialGameState.hostId = room.hostId;
         room.gameState = initialGameState;
 
         room.broadcastGameState();
+
+        if (room.players.length === room.maxPlayers) {
+            console.log(`🎮 房間 ${roomId} 已滿，開始隨機決定順序`);
+            setTimeout(() => {
+                room.startOrderDecision();
+            }, 800);
+        }
     }
 
     // 加入房間流程（含房間與參數驗證）
@@ -1405,7 +1951,8 @@ wss.on('connection', (ws, req) => {
                     payload: { playerId: currentPlayerId }
                 });
 
-                if (room.players.length === 0) {
+                const hasOnlyNpc = room.players.length === 1 && room.npcId && room.players[0].playerId === room.npcId;
+                if (room.players.length === 0 || hasOnlyNpc) {
                     gameRooms.delete(currentRoomId);
                     console.log(`🗑️ 房間 ${currentRoomId} 已刪除`);
                 }
