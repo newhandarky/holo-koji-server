@@ -4,10 +4,12 @@ import { gameReducer, initialState } from '../reducers/gameReducer';
 import { createRandomizedGeishas } from '../utils/gameUtils';
 
 class GameManager {
+    // 遊戲房間資料表（gameId → GameState）
     private games: Map<string, GameState> = new Map();
 
     // 建立新遊戲房間
     createGame(gameId: string): GameState {
+        // 建立初始狀態並隨機產生藝妓
         const gameState: GameState = {
             ...initialState,
             gameId,
@@ -44,6 +46,7 @@ class GameManager {
         const game = this.games.get(gameId);
         if (!game) return null;
 
+        // 透過 reducer 計算新狀態
         const newState = gameReducer(game, action);
         this.games.set(gameId, newState);
 
@@ -62,4 +65,5 @@ class GameManager {
     }
 }
 
+// 全域 GameManager 單例
 export const gameManager = new GameManager();

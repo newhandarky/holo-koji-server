@@ -5,10 +5,11 @@ import { WebSocketServer } from 'ws';
 import cors from 'cors';
 import { createRandomizedGeishas, createBaseGeishas, buildDeckForGeishas } from './utils/gameUtils.js';
 
+// 建立 Express 與 HTTP 伺服器
 const app = express();
 const server = createServer(app);
 
-// CORS 設定
+// CORS 設定（允許前端來源）
 app.use(cors({
     origin: [
         'http://localhost:3000',
@@ -22,6 +23,7 @@ app.use(cors({
     allowedHeaders: ['Content-Type', 'Authorization']
 }));
 
+// JSON 解析中介層
 app.use(express.json());
 
 // 健康檢查端點
@@ -40,23 +42,33 @@ app.get('/health', (req, res) => {
     });
 });
 
+// 房間管理表（roomId → GameRoom）
 const gameRooms = new Map();
+// WebSocket 伺服器實體
 const wss = new WebSocketServer({ server });
 
 class GameRoom {
     constructor(roomId) {
+        // 房間 ID
         this.roomId = roomId;
+        // 房間內玩家列表
         this.players = [];
+        // 遊戲狀態快照
         this.gameState = null;
+        // 最大玩家數
         this.maxPlayers = 2;
+        // 房主玩家 ID
         this.hostId = null;
         this.orderDecisionState = {
             isDeciding: false,
             result: null,
             confirmations: new Set()
         };
+        // 藝妓卡的基底資料（跨回合保留好感）
         this.baseGeishas = null;
+        // 發牌動畫序列
         this.dealSequence = [];
+        // 上一輪起始玩家 ID
         this.lastRoundStarterId = null;
     }
 
@@ -202,6 +214,7 @@ class GameRoom {
             this.baseGeishas = createRandomizedGeishas();
         }
 
+        // 以 baseGeishas 為基礎建立本回合藝妓資料
         const geishasClone = cloneGeishas(this.baseGeishas);
         const { deck, removedCard } = buildDeckForGeishas(geishasClone);
 
@@ -209,6 +222,7 @@ class GameRoom {
         const dealSequence = [];
         const playersState = playerIds.map((id) => createPlayer(id));
 
+        // 每位玩家發 6 張手牌
         for (let round = 0; round < 6; round += 1) {
             playerIds.forEach((playerId, index) => {
                 const dealtCard = dealingDeck.shift();
@@ -230,6 +244,7 @@ class GameRoom {
 
         const resolvedRound = roundNumber ?? this.gameState?.round ?? 1;
 
+        // 組合本回合遊戲狀態
         this.gameState = {
             gameId: this.roomId,
             hostId: this.hostId,
@@ -407,6 +422,7 @@ class GameRoom {
 
         console.log(`🚀 遊戲開始，房間 ${this.roomId}，順序：`, order);
 
+        // 廣播遊戲開始事件（含可見狀態）
         this.broadcastGameStateEvent('GAME_STARTED');
 
         this.beginTurnForCurrentPlayer();
@@ -497,6 +513,7 @@ class GameRoom {
             return;
         }
 
+        // 抽牌並依玩家視角廣播
         const drawnCard = this.drawCardForPlayer(currentPlayer);
         if (drawnCard) {
             this.players.forEach((player) => {
@@ -1209,6 +1226,7 @@ wss.on('connection', (ws, req) => {
     let currentPlayerId = null;
     let currentRoomId = null;
 
+    // 監聽客戶端訊息
     ws.on('message', (data) => {
         try {
             const message = JSON.parse(data.toString());
@@ -1238,6 +1256,7 @@ wss.on('connection', (ws, req) => {
         }
     });
 
+    // 連線關閉時清理狀態
     ws.on('close', () => {
         if (currentRoomId && currentPlayerId) {
             handleLeaveRoom(ws);

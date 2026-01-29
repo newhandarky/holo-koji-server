@@ -2,8 +2,10 @@
 import { GameState, GameAction, Geisha } from "game-shared-types"
 import { createRandomizedGeishas } from '../utils/gameUtils';
 
+// 初始藝妓資料（隨機順序）
 const initialGeishas: Geisha[] = createRandomizedGeishas();
 
+// 初始遊戲狀態
 export const initialState: GameState = {
     gameId: '',
     players: [],
@@ -24,6 +26,7 @@ export const initialState: GameState = {
     }
 };
 
+// 遊戲狀態 reducer（僅供部分後端模組使用）
 export const gameReducer = (state: GameState, action: GameAction): GameState => {
     console.log('🔄 [Reducer] ===== 收到動作 =====');
     console.log('🔄 [Reducer] 動作類型:', action.type);

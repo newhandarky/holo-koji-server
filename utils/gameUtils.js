@@ -3,6 +3,7 @@
  * @typedef {import('game-shared-types').ItemCard} ItemCard
  */
 
+// 藝妓資料（後端初始化用）
 export const geishaData = [
     {
         name: '一伊那尓栖',
@@ -33,14 +34,17 @@ export const geishaData = [
         imageUrl: 'https://hololive.hololivepro.com/wp-content/uploads/2023/09/Juufuutei-Raden_list_thumb.png'
     }
 ];
+// 魅力值分布（對應藝妓順序）
 export const charmPointsDistribution = [2, 2, 2, 3, 3, 4, 5];
 
+// 建立藝妓基礎資料（含魅力值）
 const baseGeishaData = geishaData.map((geisha, index) => ({
     id: index + 1,
     name: geisha.name,
     charmPoints: charmPointsDistribution[index]
 }));
 
+// 洗牌工具（Fisher-Yates）
 const shuffleArray = (array) => {
     const result = [...array];
     for (let i = result.length - 1; i > 0; i -= 1) {
@@ -50,11 +54,13 @@ const shuffleArray = (array) => {
     return result;
 };
 
+// 取得固定順序的藝妓資料
 export const createBaseGeishas = () => baseGeishaData.map((geisha) => ({
     ...geisha,
     controlledBy: null
 }));
 
+// 取得隨機順序的藝妓資料
 export const createRandomizedGeishas = () => shuffleArray(baseGeishaData).map((geisha) => ({
     ...geisha,
     controlledBy: null
