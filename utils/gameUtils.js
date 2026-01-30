@@ -60,18 +60,8 @@ export const createBaseGeishas = () => baseGeishaData.map((geisha) => ({
     controlledBy: null
 }));
 
-// 取得隨機順序 + 隨機魅力值對應的藝妓資料（僅用於新遊戲）
-export const createRandomizedGeishas = () => {
-    const shuffledGeishas = shuffleArray(geishaData);
-    const shuffledCharm = shuffleArray(charmPointsDistribution);
-
-    return shuffledGeishas.map((geisha, index) => ({
-        id: index + 1,
-        name: geisha.name,
-        charmPoints: shuffledCharm[index],
-        controlledBy: null
-    }));
-};
+// 取得固定順序的藝妓資料（依 index 對應魅力值）
+export const createRandomizedGeishas = () => createBaseGeishas();
 
 // 根據藝妓魅力值建立牌庫（每位藝妓的卡牌數量等於魅力值）
 export const buildDeckForGeishas = (geishas) => {
@@ -84,8 +74,7 @@ export const buildDeckForGeishas = (geishas) => {
             cards.push({
                 id: `card-${geisha.id}-${copy}-${Math.random().toString(36).slice(2, 8)}`,
                 geishaId: geisha.id,
-                type: `geisha-${geisha.id}`,
-                charmPoints: geisha.charmPoints
+                type: `geisha-${geisha.id}`
             });
         }
     });

@@ -119,7 +119,7 @@ class GameRoom {
 
         const normalized = normalizeNpcDifficulty(difficulty);
         const label = NPC_DIFFICULTY_LABEL[normalized] ?? NPC_DIFFICULTY_LABEL.easy;
-        const npcId = `NPC-${label}`;
+        const npcId = `${label}`;
         const npcSocket = {
             readyState: 1,
             send: () => { }
