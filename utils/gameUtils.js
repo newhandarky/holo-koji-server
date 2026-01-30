@@ -84,7 +84,8 @@ export const buildDeckForGeishas = (geishas) => {
             cards.push({
                 id: `card-${geisha.id}-${copy}-${Math.random().toString(36).slice(2, 8)}`,
                 geishaId: geisha.id,
-                type: `geisha-${geisha.id}`
+                type: `geisha-${geisha.id}`,
+                charmPoints: geisha.charmPoints
             });
         }
     });
