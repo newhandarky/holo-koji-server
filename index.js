@@ -7,11 +7,11 @@ import { createRandomizedGeishas, createBaseGeishas, buildDeckForGeishas } from 
 
 // NPC 設定（難度與思考時間）
 const NPC_DIFFICULTY_LABEL = {
-    easy: '簡單',
-    medium: '普通',
-    hard: '困難',
-    expert: '專家',
-    hell: '地獄'
+    easy: 'しぐれうい',
+    medium: '大空スバル',
+    hard: '兎田ぺこら',
+    expert: '猫又おかゆ',
+    hell: 'ときのそら'
 };
 const NPC_THINKING_DELAY = {
     easy: 1400,
