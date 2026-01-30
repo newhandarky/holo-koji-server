@@ -7,11 +7,11 @@ import { createRandomizedGeishas, createBaseGeishas, buildDeckForGeishas } from 
 
 // NPC 設定（難度與思考時間）
 const NPC_DIFFICULTY_LABEL = {
-    easy: '簡單',
-    medium: '中等',
-    hard: '偏強',
-    expert: '超強',
-    hell: '地獄'
+    easy: 'しぐれうい(easy)',
+    medium: '大空スバル(medium)',
+    hard: '兎田ぺこら(hard)',
+    expert: '猫又おかゆ(expert)',
+    hell: 'ときのそら(hell)'
 };
 const NPC_THINKING_DELAY = {
     easy: 1400,
@@ -100,6 +100,10 @@ class GameRoom {
         this.npcDifficulty = null;
         this.npcActionTimer = null;
         this.npcResponseTimer = null;
+        // 再來一場確認集合
+        this.rematchConfirmations = new Set();
+        // 開局準備確認集合
+        this.readyConfirmations = new Set();
     }
 
     // 判斷是否為 NPC 玩家
@@ -139,6 +143,96 @@ class GameRoom {
             clearTimeout(this.npcResponseTimer);
             this.npcResponseTimer = null;
         }
+    }
+
+    // 送出再來一場請求
+    requestRematch(playerId) {
+        if (!this.validatePlayerInRoom(playerId)) {
+            return;
+        }
+
+        this.rematchConfirmations.add(playerId);
+
+        if (this.npcId) {
+            this.rematchConfirmations.add(this.npcId);
+        }
+
+        if (this.rematchConfirmations.size >= 2) {
+            this.startRematch();
+        } else {
+            this.broadcast({
+                type: 'REMATCH_REQUESTED',
+                payload: {
+                    confirmations: Array.from(this.rematchConfirmations)
+                }
+            });
+        }
+    }
+
+    // 開始準備確認流程
+    startReadyCheck() {
+        if (!this.gameState) {
+            return;
+        }
+
+        const playerIds = this.players.map(player => player.playerId);
+        this.readyConfirmations.clear();
+
+        this.broadcast({
+            type: 'READY_CHECK',
+            payload: {
+                confirmations: [],
+                waitingFor: playerIds
+            }
+        });
+
+        if (this.npcId) {
+            const delay = NPC_THINKING_DELAY[this.npcDifficulty] ?? NPC_THINKING_DELAY.easy;
+            setTimeout(() => {
+                this.confirmReady(this.npcId);
+            }, delay);
+        }
+    }
+
+    // 玩家確認準備完成
+    confirmReady(playerId) {
+        if (!this.validatePlayerInRoom(playerId)) {
+            return;
+        }
+
+        this.readyConfirmations.add(playerId);
+        const waitingFor = this.players
+            .map(player => player.playerId)
+            .filter(id => !this.readyConfirmations.has(id));
+
+        this.broadcast({
+            type: 'READY_STATUS',
+            payload: {
+                confirmations: Array.from(this.readyConfirmations),
+                waitingFor
+            }
+        });
+
+        if (waitingFor.length === 0) {
+            this.startGameWithOrder();
+        }
+    }
+
+    // 重新開始對戰（保留同房間與玩家）
+    startRematch() {
+        console.log(`🔁 房間 ${this.roomId} 重新開始對戰`);
+
+        this.clearNpcTimers();
+        this.rematchConfirmations.clear();
+        this.lastRoundStarterId = null;
+        this.baseGeishas = createRandomizedGeishas();
+        this.orderDecisionState = {
+            isDeciding: false,
+            result: null,
+            confirmations: new Set()
+        };
+
+        this.startOrderDecision();
     }
 
     // 將訊息傳送給指定玩家（避免廣播時洩漏資訊）
@@ -365,17 +459,6 @@ class GameRoom {
             }
         });
 
-        if (this.dealSequence.length > 0) {
-            this.players.forEach((player) => {
-                this.sendToPlayer(player.playerId, {
-                    type: 'DEAL_ANIMATION',
-                    payload: {
-                        sequence: this.buildDealSequenceForPlayer(player.playerId)
-                    }
-                });
-            });
-        }
-
         if (this.gameState) {
             this.broadcastGameState();
         }
@@ -429,7 +512,7 @@ class GameRoom {
             this.broadcastGameState();
         }
 
-        // 若有 NPC，讓 NPC 自動確認順序
+        // 若有 NPC，順序決定後自動確認
         if (this.npcId) {
             const delay = NPC_THINKING_DELAY[this.npcDifficulty] ?? NPC_THINKING_DELAY.easy;
             setTimeout(() => {
@@ -482,8 +565,8 @@ class GameRoom {
         // 如果所有玩家都確認了，開始遊戲
         if (this.orderDecisionState.confirmations.size === 2) {
             setTimeout(() => {
-                this.startGameWithOrder();
-            }, 1000);
+                this.startReadyCheck();
+            }, 800);
         }
     }
 
@@ -501,6 +584,18 @@ class GameRoom {
 
         // 廣播遊戲開始事件（含可見狀態）
         this.broadcastGameStateEvent('GAME_STARTED');
+
+        // 確認進入遊戲後再開始發牌動畫
+        if (this.dealSequence.length > 0) {
+            this.players.forEach((player) => {
+                this.sendToPlayer(player.playerId, {
+                    type: 'DEAL_ANIMATION',
+                    payload: {
+                        sequence: this.buildDealSequenceForPlayer(player.playerId)
+                    }
+                });
+            });
+        }
 
         this.beginTurnForCurrentPlayer();
 
@@ -1866,6 +1961,12 @@ wss.on('connection', (ws, req) => {
                 case 'GAME_ACTION':
                     handleGameAction(ws, message.payload);
                     break;
+                case 'READY_CONFIRM':
+                    handleReadyConfirm(ws, message.payload);
+                    break;
+                case 'REMATCH_REQUEST':
+                    handleRematchRequest(ws, message.payload);
+                    break;
                 case 'LEAVE_ROOM':
                     handleLeaveRoom(ws);
                     break;
@@ -2027,6 +2128,26 @@ wss.on('connection', (ws, req) => {
         }
 
         room.handleAction(currentPlayerId, payload.action);
+    }
+
+    // 玩家準備確認
+    function handleReadyConfirm(ws, payload) {
+        const room = gameRooms.get(currentRoomId);
+        if (!room || !currentPlayerId) {
+            return;
+        }
+
+        room.confirmReady(currentPlayerId);
+    }
+
+    // 再來一場請求
+    function handleRematchRequest(ws, payload) {
+        const room = gameRooms.get(currentRoomId);
+        if (!room || !currentPlayerId) {
+            return;
+        }
+
+        room.requestRematch(currentPlayerId);
     }
 
     // 玩家離開房間（斷線或主動退出）
