@@ -4,6 +4,12 @@ import { createServer } from 'http';
 import { WebSocketServer } from 'ws';
 import cors from 'cors';
 import { createRandomizedGeishas, createBaseGeishas, buildDeckForGeishas } from './utils/gameUtils.js';
+import {
+    deleteRoomSnapshot,
+    isRedisEnabled,
+    loadRoomSnapshot,
+    saveRoomSnapshot
+} from './utils/roomStore.js';
 
 // NPC 設定（難度與思考時間）
 const NPC_DIFFICULTY_LABEL = {
@@ -74,6 +80,8 @@ class GameRoom {
     constructor(roomId) {
         // 房間 ID
         this.roomId = roomId;
+        // 房間建立時間
+        this.createdAt = Date.now();
         // 房間內玩家列表
         this.players = [];
         // 遊戲狀態快照
@@ -104,6 +112,27 @@ class GameRoom {
         this.rematchConfirmations = new Set();
         // 開局準備確認集合
         this.readyConfirmations = new Set();
+    }
+
+    // 產出可儲存的房間快照（不含連線物件）
+    buildRoomSnapshot() {
+        return {
+            roomId: this.roomId,
+            hostId: this.hostId,
+            npcId: this.npcId,
+            npcDifficulty: this.npcDifficulty,
+            createdAt: this.createdAt,
+            baseGeishas: this.baseGeishas,
+            gameState: this.gameState
+        };
+    }
+
+    // 儲存房間快照（Redis 可用時）
+    persistRoomSnapshot() {
+        if (!isRedisEnabled()) {
+            return;
+        }
+        void saveRoomSnapshot(this.roomId, this.buildRoomSnapshot());
     }
 
     // 判斷是否為 NPC 玩家
@@ -317,6 +346,7 @@ class GameRoom {
         if (existingPlayer) {
             existingPlayer.ws = ws;
             console.log(`♻️ 玩家 ${playerId} 重新連線房間 ${this.roomId}`);
+            this.persistRoomSnapshot();
             return 'existing';
         }
 
@@ -326,6 +356,7 @@ class GameRoom {
 
         this.players.push({ playerId, ws });
         console.log(`✅ 玩家 ${playerId} 加入房間 ${this.roomId}，當前玩家數：${this.players.length}`);
+        this.persistRoomSnapshot();
         return 'added';
     }
 
@@ -333,6 +364,7 @@ class GameRoom {
     removePlayer(playerId) {
         this.players = this.players.filter(p => p.playerId !== playerId);
         console.log(`❌ 玩家 ${playerId} 離開房間 ${this.roomId}，當前玩家數：${this.players.length}`);
+        this.persistRoomSnapshot();
     }
 
     // 廣播訊息給房間內所有玩家（非狀態同步使用）
@@ -622,6 +654,8 @@ class GameRoom {
                 });
             }
         });
+
+        this.persistRoomSnapshot();
     }
 
     // 廣播可見狀態（標準狀態同步事件）
@@ -1934,6 +1968,31 @@ class GameRoom {
     }
 }
 
+// 由 Redis 快照還原房間（只重建必要狀態）
+const restoreRoomFromSnapshot = (snapshot) => {
+    if (!snapshot?.roomId) {
+        return null;
+    }
+
+    const room = new GameRoom(snapshot.roomId);
+    room.hostId = snapshot.hostId ?? null;
+    room.npcId = snapshot.npcId ?? null;
+    room.npcDifficulty = snapshot.npcDifficulty ?? null;
+    room.createdAt = snapshot.createdAt ?? Date.now();
+    room.baseGeishas = snapshot.baseGeishas ?? snapshot.gameState?.geishas ?? null;
+    room.gameState = snapshot.gameState ?? null;
+
+    if (room.npcId) {
+        const npcSocket = {
+            readyState: 1,
+            send: () => { }
+        };
+        room.players.push({ playerId: room.npcId, ws: npcSocket, isNpc: true });
+    }
+
+    return room;
+};
+
 // WebSocket 連線入口（處理玩家進出與訊息）
 wss.on('connection', (ws, req) => {
     const origin = req.headers.origin;
@@ -1943,17 +2002,17 @@ wss.on('connection', (ws, req) => {
     let currentRoomId = null;
 
     // 監聽客戶端訊息
-    ws.on('message', (data) => {
+    ws.on('message', async (data) => {
         try {
             const message = JSON.parse(data.toString());
             console.log('📨 收到訊息:', message, '來源:', origin);
 
             switch (message.type) {
                 case 'JOIN_ROOM':
-                    handleJoinRoom(ws, message.payload);
+                    await handleJoinRoom(ws, message.payload);
                     break;
                 case 'CREATE_ROOM':
-                    handleCreateRoom(ws, message.payload);
+                    await handleCreateRoom(ws, message.payload);
                     break;
                 case 'CONFIRM_ORDER':
                     handleConfirmOrder(ws, message.payload);
@@ -1987,7 +2046,7 @@ wss.on('connection', (ws, req) => {
     });
 
     // 建立房間流程（含基本參數驗證）
-    function handleCreateRoom(ws, payload) {
+    async function handleCreateRoom(ws, payload) {
         if (!payload?.playerId) {
             ws.send(JSON.stringify({
                 type: 'ERROR',
@@ -2028,6 +2087,8 @@ wss.on('connection', (ws, req) => {
 
         room.broadcastGameState();
 
+        room.persistRoomSnapshot();
+
         if (room.players.length === room.maxPlayers) {
             console.log(`🎮 房間 ${roomId} 已滿，開始隨機決定順序`);
             setTimeout(() => {
@@ -2037,7 +2098,7 @@ wss.on('connection', (ws, req) => {
     }
 
     // 加入房間流程（含房間與參數驗證）
-    function handleJoinRoom(ws, payload) {
+    async function handleJoinRoom(ws, payload) {
         if (!payload?.roomId || !payload?.playerId) {
             ws.send(JSON.stringify({
                 type: 'ERROR',
@@ -2047,7 +2108,17 @@ wss.on('connection', (ws, req) => {
         }
 
         const { roomId, playerId } = payload;
-        const room = gameRooms.get(roomId);
+        let room = gameRooms.get(roomId);
+
+        if (!room) {
+            const snapshot = await loadRoomSnapshot(roomId);
+            if (snapshot) {
+                room = restoreRoomFromSnapshot(snapshot);
+                if (room) {
+                    gameRooms.set(roomId, room);
+                }
+            }
+        }
 
         if (!room) {
             ws.send(JSON.stringify({
@@ -2096,6 +2167,8 @@ wss.on('connection', (ws, req) => {
         room.gameState = updatedGameState;
 
         room.broadcastGameState();
+
+        room.persistRoomSnapshot();
 
         if (room.players.length === room.maxPlayers) {
             console.log(`🎮 房間 ${roomId} 已滿，開始隨機決定順序`);
@@ -2164,6 +2237,7 @@ wss.on('connection', (ws, req) => {
                 const hasOnlyNpc = room.players.length === 1 && room.npcId && room.players[0].playerId === room.npcId;
                 if (room.players.length === 0 || hasOnlyNpc) {
                     gameRooms.delete(currentRoomId);
+                    void deleteRoomSnapshot(currentRoomId);
                     console.log(`🗑️ 房間 ${currentRoomId} 已刪除`);
                 }
             }
