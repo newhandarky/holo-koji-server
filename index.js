@@ -2065,7 +2065,9 @@ wss.on('connection', (ws, req) => {
 
         const mode = payload.mode === 'npc' ? 'npc' : 'online';
         const aiDifficulty = normalizeNpcDifficulty(payload.aiDifficulty ?? 'easy');
-        const geishaSet = payload.geishaSet === 'akatsuki' ? 'akatsuki' : 'default';
+        const geishaSet = (payload.geishaSet === 'akatsuki' || payload.geishaSet === 'onesan')
+            ? payload.geishaSet
+            : 'default';
 
         const roomId = generateRoomId();
         const room = new GameRoom(roomId);
