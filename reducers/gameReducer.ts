@@ -1,12 +1,9 @@
 // src/reducers/gameReducer.ts
 import { GameState, GameAction, Geisha } from "game-shared-types"
-// TS 對 .js 的 re-export 沒有型別資訊，因此 IDE 會判定沒有 export
 import { createRandomizedGeishas } from '../utils/gameUtils';
 
-// 初始藝妓資料（隨機順序）
 const initialGeishas: Geisha[] = createRandomizedGeishas();
 
-// 初始遊戲狀態
 export const initialState: GameState = {
     gameId: '',
     players: [],
@@ -27,7 +24,6 @@ export const initialState: GameState = {
     }
 };
 
-// 遊戲狀態 reducer（僅供部分後端模組使用）
 export const gameReducer = (state: GameState, action: GameAction): GameState => {
     console.log('🔄 [Reducer] ===== 收到動作 =====');
     console.log('🔄 [Reducer] 動作類型:', action.type);
@@ -134,6 +130,21 @@ export const gameReducer = (state: GameState, action: GameAction): GameState => 
                 phase: 'ended',
                 winner: action.payload.winner
             };
+
+        // !
+        // case 'RESET_GAME':
+        //     return {
+        //         ...state,
+        //         geishas: initialGeishas, // 重置時重新隨機
+        //         phase: 'waiting',
+        //         currentPlayer: 0,
+        //     };
+
+        // case 'START_NEW_ROUND':
+        //     return {
+        //         ...state,
+        //         geishas: createRandomizedGeishas(), // 新回合重新隨機
+        //     };
 
         default:
             console.warn('⚠️ [Reducer] 未知動作類型:', action);

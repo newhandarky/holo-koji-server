@@ -11,7 +11,6 @@ import {
     OrderDecisionResultPayload
 } from "game-shared-types"
 
-// 設定 Socket.IO 遊戲事件
 export function setupGameSocket(io: SocketServer) {
     io.on('connection', (socket: Socket) => {
         console.log(`🟢 [Socket.IO] 玩家連接: ${socket.id}`);
