@@ -34,6 +34,26 @@ const normalizeNpcDifficulty = (difficulty) => {
     return 'easy';
 };
 
+const normalizePlayerMeta = (playerId, payload = {}) => {
+    const displayName = typeof payload.displayName === 'string' && payload.displayName.trim()
+        ? payload.displayName.trim()
+        : playerId;
+
+    const lineUserId = typeof payload.lineUserId === 'string' && payload.lineUserId.trim()
+        ? payload.lineUserId.trim()
+        : undefined;
+
+    const avatarUrl = typeof payload.avatarUrl === 'string' && payload.avatarUrl.trim()
+        ? payload.avatarUrl.trim()
+        : undefined;
+
+    return {
+        name: displayName,
+        lineUserId,
+        avatarUrl
+    };
+};
+
 // 建立 Express 與 HTTP 伺服器
 const app = express();
 const server = createServer(app);
@@ -157,12 +177,30 @@ class GameRoom {
             send: () => { }
         };
 
-        this.players.push({ playerId: npcId, ws: npcSocket, isNpc: true });
+        this.players.push({
+            playerId: npcId,
+            ws: npcSocket,
+            isNpc: true,
+            name: npcId,
+            lineUserId: undefined,
+            avatarUrl: undefined
+        });
         this.npcId = npcId;
         this.npcDifficulty = normalized;
 
         console.log(`🤖 NPC 玩家加入房間 ${this.roomId}，難度：${label}`);
         return npcId;
+    }
+
+    getPlayerMetaMap() {
+        return this.players.reduce((map, player) => {
+            map[player.playerId] = {
+                name: player.name ?? player.playerId,
+                lineUserId: player.lineUserId,
+                avatarUrl: player.avatarUrl
+            };
+            return map;
+        }, {});
     }
 
     // 清除 NPC 計時器（避免重複執行）
@@ -341,17 +379,27 @@ class GameRoom {
     }
 
     // 加入玩家到房間，並回傳加入結果
-    addPlayer(playerId, ws) {
+    addPlayer(playerId, ws, meta = {}) {
         // 基本檢查：避免空白 playerId
         if (!playerId) {
             console.warn('⚠️ 嘗試加入房間但 playerId 為空');
             return 'invalid';
         }
 
+        const normalizedMeta = normalizePlayerMeta(playerId, meta);
         const existingPlayer = this.players.find(player => player.playerId === playerId);
 
         if (existingPlayer) {
             existingPlayer.ws = ws;
+            if (normalizedMeta.name) {
+                existingPlayer.name = normalizedMeta.name;
+            }
+            if (normalizedMeta.lineUserId) {
+                existingPlayer.lineUserId = normalizedMeta.lineUserId;
+            }
+            if (normalizedMeta.avatarUrl) {
+                existingPlayer.avatarUrl = normalizedMeta.avatarUrl;
+            }
             console.log(`♻️ 玩家 ${playerId} 重新連線房間 ${this.roomId}`);
             this.persistRoomSnapshot();
             return 'existing';
@@ -361,7 +409,13 @@ class GameRoom {
             return 'full';
         }
 
-        this.players.push({ playerId, ws });
+        this.players.push({
+            playerId,
+            ws,
+            name: normalizedMeta.name,
+            lineUserId: normalizedMeta.lineUserId,
+            avatarUrl: normalizedMeta.avatarUrl
+        });
         console.log(`✅ 玩家 ${playerId} 加入房間 ${this.roomId}，當前玩家數：${this.players.length}`);
         this.persistRoomSnapshot();
         return 'added';
@@ -615,7 +669,13 @@ class GameRoom {
         if (!this.baseGeishas) {
             this.baseGeishas = createRandomizedGeishas(this.geishaSet ?? 'default');
         }
-        const { gameState } = createGameStateWithOrder(this.roomId, order, this.baseGeishas, this.gameState);
+        const { gameState } = createGameStateWithOrder(
+            this.roomId,
+            order,
+            this.baseGeishas,
+            this.gameState,
+            this.getPlayerMetaMap()
+        );
         this.gameState = gameState;
         this.lastRoundStarterId = order[0];
 
@@ -2079,7 +2139,7 @@ wss.on('connection', (ws, req) => {
         room.geishaSet = geishaSet;
         room.baseGeishas = createRandomizedGeishas(geishaSet);
 
-        room.addPlayer(currentPlayerId, ws);
+        room.addPlayer(currentPlayerId, ws, normalizePlayerMeta(currentPlayerId, payload));
 
         if (mode === 'npc') {
             room.addNpcPlayer(aiDifficulty);
@@ -2092,7 +2152,13 @@ wss.on('connection', (ws, req) => {
             payload: { roomId, playerId: currentPlayerId }
         }));
 
-        const initialGameState = createWaitingGameState(roomId, room.players.map(p => p.playerId), room.baseGeishas, room.geishaSet);
+        const initialGameState = createWaitingGameState(
+            roomId,
+            room.players.map(p => p.playerId),
+            room.baseGeishas,
+            room.geishaSet,
+            room.getPlayerMetaMap()
+        );
         initialGameState.hostId = room.hostId;
         room.gameState = initialGameState;
 
@@ -2141,7 +2207,7 @@ wss.on('connection', (ws, req) => {
         if (!room.baseGeishas) {
             room.baseGeishas = createRandomizedGeishas(room.geishaSet ?? 'default');
         }
-        const result = room.addPlayer(playerId, ws);
+        const result = room.addPlayer(playerId, ws, normalizePlayerMeta(playerId, payload));
 
         if (result === 'full') {
             ws.send(JSON.stringify({
@@ -2173,7 +2239,13 @@ wss.on('connection', (ws, req) => {
             payload: { playerId, roomId }
         }));
 
-        const updatedGameState = createWaitingGameState(roomId, room.players.map(p => p.playerId), room.baseGeishas, room.geishaSet);
+        const updatedGameState = createWaitingGameState(
+            roomId,
+            room.players.map(p => p.playerId),
+            room.baseGeishas,
+            room.geishaSet,
+            room.getPlayerMetaMap()
+        );
         updatedGameState.hostId = room.hostId;
         room.gameState = updatedGameState;
 
@@ -2276,11 +2348,11 @@ function cloneGeishas(geishas) {
 }
 
 // 建立等待中的遊戲狀態（玩家尚未滿或尚未開始）
-function createWaitingGameState(gameId, playerIds, geishas, geishaSet = 'default') {
+function createWaitingGameState(gameId, playerIds, geishas, geishaSet = 'default', playerMetaMap = {}) {
     return {
         gameId,
         hostId: null,
-        players: playerIds.map(id => createPlayer(id)),
+        players: playerIds.map(id => createPlayer(id, playerMetaMap[id])),
         geishas: cloneGeishas(geishas ?? createBaseGeishas(geishaSet)),
         geishaSet,
         currentPlayer: 0,
@@ -2305,7 +2377,7 @@ function createWaitingGameState(gameId, playerIds, geishas, geishaSet = 'default
 }
 
 // 建立排序後的遊戲狀態（保留上一輪資料）
-function createGameStateWithOrder(gameId, orderedPlayerIds, geishas, existingState = null) {
+function createGameStateWithOrder(gameId, orderedPlayerIds, geishas, existingState = null, playerMetaMap = {}) {
     const baseGeishas = geishas ?? createBaseGeishas();
     const previousState = existingState ?? {};
 
@@ -2318,7 +2390,7 @@ function createGameStateWithOrder(gameId, orderedPlayerIds, geishas, existingSta
             };
         }
 
-        return createPlayer(playerId);
+        return createPlayer(playerId, playerMetaMap[playerId]);
     });
 
     return {
@@ -2354,10 +2426,12 @@ function createGameStateWithOrder(gameId, orderedPlayerIds, geishas, existingSta
 }
 
 // 建立玩家初始資料結構
-function createPlayer(playerId) {
+function createPlayer(playerId, meta = {}) {
     return {
         id: playerId,
-        name: playerId,
+        name: meta.name ?? playerId,
+        lineUserId: meta.lineUserId,
+        avatarUrl: meta.avatarUrl,
         hand: [],
         playedCards: [],
         secretCards: [],
