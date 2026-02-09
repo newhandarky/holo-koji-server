@@ -97,10 +97,42 @@ export const onesanGeishaData = [
     }
 ];
 
+export const collaborationGeishaData = [
+    {
+        name: 'アキ・ローゼンタール',
+        imageUrl: '/images/geisha/collaboration/marin.jpg'
+    },
+    {
+        name: '癒月ちょこ',
+        imageUrl: '/images/geisha/collaboration/ren.jpg'
+    },
+    {
+        name: 'ときのそら',
+        imageUrl: '/images/geisha/collaboration/yoru.jpg'
+    },
+    {
+        name: 'Mori Calliope',
+        imageUrl: '/images/geisha/collaboration/megumin.jpg'
+    },
+    {
+        name: 'AZKi',
+        imageUrl: '/images/geisha/collaboration/arima.jpg'
+    },
+    {
+        name: 'Elizabeth Rose Bloodflame',
+        imageUrl: '/images/geisha/collaboration/furiren.jpg'
+    },
+    {
+        name: 'Nerissa Ravencroft',
+        imageUrl: '/images/geisha/collaboration/erien.jpg'
+    }
+];
+
 const geishaSetMap = {
     default: geishaData,
     akatsuki: akatsukiGeishaData,
-    onesan: onesanGeishaData
+    onesan: onesanGeishaData,
+    collaboration: collaborationGeishaData
 };
 // 魅力值分布（對應藝妓順序）
 export const charmPointsDistribution = [2, 2, 2, 3, 3, 4, 5];

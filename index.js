@@ -2125,7 +2125,7 @@ wss.on('connection', (ws, req) => {
 
         const mode = payload.mode === 'npc' ? 'npc' : 'online';
         const aiDifficulty = normalizeNpcDifficulty(payload.aiDifficulty ?? 'easy');
-        const geishaSet = (payload.geishaSet === 'akatsuki' || payload.geishaSet === 'onesan')
+        const geishaSet = (payload.geishaSet === 'akatsuki' || payload.geishaSet === 'onesan' || payload.geishaSet === 'collaboration')
             ? payload.geishaSet
             : 'default';
 
