@@ -3,35 +3,51 @@
  * @typedef {import('game-shared-types').ItemCard} ItemCard
  */
 
+const DEFAULT_WEB_APP_URL = 'https://newhandarky.github.io/holo-koji';
+const assetBaseUrl = (process.env.WEB_APP_URL || process.env.REACT_APP_WEB_APP_URL || DEFAULT_WEB_APP_URL).replace(/\/$/, '');
+
+const resolveAssetUrl = (assetPath) => {
+    if (!assetPath) {
+        return '';
+    }
+
+    if (/^https?:\/\//i.test(assetPath)) {
+        return assetPath;
+    }
+
+    const normalizedPath = assetPath.startsWith('/') ? assetPath : `/${assetPath}`;
+    return `${assetBaseUrl}${normalizedPath}`;
+};
+
 // 藝妓資料（後端初始化用）
 export const geishaData = [
     {
-        name: '一伊那尓栖',
-        imageUrl: '/images/geisha/origin/ninomae-inanis.jpg'
+        name: 'レイナ',
+        imageUrl: 'https://pub-0238f59b333e4bf38dac0e35da86c1a0.r2.dev/uploads/%E9%8A%80%E5%BA%A7/1777514766694-d3a46d91-d1dc-4b06-8608-1fcf0e24e3f1-2026-4-27-12_09_31.png'
     },
     {
-        name: '大神ミオ',
-        imageUrl: '/images/geisha/origin/ookami-mio.jpg'
+        name: 'ミサキ',
+        imageUrl: 'https://pub-0238f59b333e4bf38dac0e35da86c1a0.r2.dev/uploads/%E9%8A%80%E5%BA%A7/1777514743942-46f8cae1-0e25-4945-9799-da9a6a945861-ChatGPT-Image-2026-4-27-05_24_29.png'
     },
     {
-        name: '百鬼あやめ',
-        imageUrl: '/images/geisha/origin/nakiri-ayame.jpg'
+        name: 'ユア',
+        imageUrl: 'https://pub-0238f59b333e4bf38dac0e35da86c1a0.r2.dev/uploads/%E9%8A%80%E5%BA%A7/1777514010037-779cd6f7-9e8d-419d-be7c-ecd6b9188475-ChatGPT-Image-2026-4-27-01_36_43.png'
     },
     {
-        name: '白上フブキ',
-        imageUrl: '/images/geisha/origin/shirakami-fubuki.jpg'
+        name: 'エマ',
+        imageUrl: 'https://pub-0238f59b333e4bf38dac0e35da86c1a0.r2.dev/uploads/%E9%8A%80%E5%BA%A7/1777514023282-13e5dd2e-6017-4531-9fb8-ddfa16d438d3-ChatGPT-Image-2026-4-27-01_55_46.png'
     },
     {
-        name: 'さくらみこ',
-        imageUrl: '/images/geisha/origin/sakura-miko.jpg'
+        name: 'リオ',
+        imageUrl: 'https://pub-0238f59b333e4bf38dac0e35da86c1a0.r2.dev/uploads/%E9%8A%80%E5%BA%A7/1777514743626-7dd8f5f0-af8e-49e4-85d3-6c3c4a554aff-ChatGPT-Image-2026-4-27-08_07_23.png'
     },
     {
-        name: '風真いろは',
-        imageUrl: '/images/geisha/origin/kazama-iroha.jpg'
+        name: 'アヤ',
+        imageUrl: 'https://pub-0238f59b333e4bf38dac0e35da86c1a0.r2.dev/uploads/%E9%8A%80%E5%BA%A7/1777514743581-1c5b41e2-820e-4eb4-b582-408da535f670-ChatGPT-Image-2026-4-27-05_34_17.png'
     },
     {
-        name: '儒烏風亭らでん',
-        imageUrl: '/images/geisha/origin/juufuutei-raden.jpg'
+        name: 'ノア',
+        imageUrl: 'https://pub-0238f59b333e4bf38dac0e35da86c1a0.r2.dev/uploads/%E9%8A%80%E5%BA%A7/1777514743625-57718cc2-612b-4914-935f-56969d3fa1b9-ChatGPT-Image-2026-4-27-05_54_16.png'
     }
 ];
 
@@ -143,7 +159,7 @@ const buildBaseGeishaData = (setKey = 'default') => {
     return data.map((geisha, index) => ({
         id: index + 1,
         name: geisha.name,
-        imageUrl: geisha.imageUrl,
+        imageUrl: resolveAssetUrl(geisha.imageUrl),
         charmPoints: charmPointsDistribution[index]
     }));
 };
