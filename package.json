@@ -1,6 +1,6 @@
 {
   "name": "holokoji-server",
-  "version": "1.0.0",
+  "version": "0.2.0",
   "description": "HOLO小路線上對戰遊戲後端伺服器",
   "type": "module",
   "main": "index.js",
