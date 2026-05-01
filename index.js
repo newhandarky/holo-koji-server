@@ -3,7 +3,7 @@ import express from 'express';
 import { createServer } from 'http';
 import { WebSocketServer } from 'ws';
 import cors from 'cors';
-import { createRandomizedGeishas, createBaseGeishas, buildDeckForGeishas } from './utils/gameUtils.js';
+import { createRandomizedGeishas, createBaseGeishas, buildDeckForGeishas, cloneGeishasForNextRound } from './utils/gameUtils.js';
 import {
     deleteRoomSnapshot,
     isRedisEnabled,
@@ -215,6 +215,27 @@ class GameRoom {
         }
     }
 
+    regenerateBaseGeishas() {
+        try {
+            this.baseGeishas = createRandomizedGeishas(this.geishaSet ?? 'default');
+            return true;
+        } catch (error) {
+            console.error(`❌ 房間 ${this.roomId} 建立藝妓資料失敗:`, error);
+            this.players.forEach((player) => {
+                this.sendError(player.playerId, 'Ginza 對戰資料設定錯誤，無法建立對戰。');
+            });
+            return false;
+        }
+    }
+
+    ensureBaseGeishas() {
+        if (this.baseGeishas) {
+            return true;
+        }
+
+        return this.regenerateBaseGeishas();
+    }
+
     // 送出再來一場請求
     requestRematch(playerId) {
         if (!this.validatePlayerInRoom(playerId)) {
@@ -295,7 +316,9 @@ class GameRoom {
         this.clearNpcTimers();
         this.rematchConfirmations.clear();
         this.lastRoundStarterId = null;
-        this.baseGeishas = createRandomizedGeishas(this.geishaSet ?? 'default');
+        if (!this.regenerateBaseGeishas()) {
+            return;
+        }
         this.orderDecisionState = {
             isDeciding: false,
             result: null,
@@ -466,8 +489,8 @@ class GameRoom {
             return;
         }
 
-        if (!this.baseGeishas) {
-            this.baseGeishas = createRandomizedGeishas(this.geishaSet ?? 'default');
+        if (!this.ensureBaseGeishas()) {
+            return;
         }
 
         // 以 baseGeishas 為基礎建立本回合藝妓資料
@@ -666,8 +689,8 @@ class GameRoom {
     // 根據決定的順序開始遊戲
     startGameWithOrder() {
         const { order } = this.orderDecisionState.result;
-        if (!this.baseGeishas) {
-            this.baseGeishas = createRandomizedGeishas(this.geishaSet ?? 'default');
+        if (!this.ensureBaseGeishas()) {
+            return;
         }
         const { gameState } = createGameStateWithOrder(
             this.roomId,
@@ -1553,7 +1576,7 @@ class GameRoom {
         }
 
         // 保留好感指示物狀態，供下一輪延續
-        this.baseGeishas = cloneGeishas(this.gameState.geishas);
+        this.baseGeishas = cloneGeishasForNextRound(this.gameState.geishas);
         this.lastRoundStarterId = nextOrder[0];
 
         this.prepareRoundState({
@@ -2137,7 +2160,16 @@ wss.on('connection', (ws, req) => {
         currentRoomId = roomId;
         room.hostId = currentPlayerId;
         room.geishaSet = geishaSet;
-        room.baseGeishas = createRandomizedGeishas(geishaSet);
+        if (!room.regenerateBaseGeishas()) {
+            gameRooms.delete(roomId);
+            currentRoomId = null;
+            currentPlayerId = null;
+            ws.send(JSON.stringify({
+                type: 'ERROR',
+                payload: { message: 'Ginza 對戰資料設定錯誤，無法建立對戰。' }
+            }));
+            return;
+        }
 
         room.addPlayer(currentPlayerId, ws, normalizePlayerMeta(currentPlayerId, payload));
 
@@ -2204,8 +2236,12 @@ wss.on('connection', (ws, req) => {
             }));
             return;
         }
-        if (!room.baseGeishas) {
-            room.baseGeishas = createRandomizedGeishas(room.geishaSet ?? 'default');
+        if (!room.ensureBaseGeishas()) {
+            ws.send(JSON.stringify({
+                type: 'ERROR',
+                payload: { message: 'Ginza 對戰資料設定錯誤，無法加入對戰。' }
+            }));
+            return;
         }
         const result = room.addPlayer(playerId, ws, normalizePlayerMeta(playerId, payload));
 

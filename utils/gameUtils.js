@@ -19,188 +19,336 @@ const resolveAssetUrl = (assetPath) => {
     return `${assetBaseUrl}${normalizedPath}`;
 };
 
-// 藝妓資料（後端初始化用）
-export const geishaData = [
+export const charmPointsDistribution = [2, 2, 2, 3, 3, 4, 5];
+
+export const ginzaCharacterPool = [
     {
-        name: 'レイナ',
-        imageUrl: 'https://pub-0238f59b333e4bf38dac0e35da86c1a0.r2.dev/uploads/%E9%8A%80%E5%BA%A7/1777514766694-d3a46d91-d1dc-4b06-8608-1fcf0e24e3f1-2026-4-27-12_09_31.png'
-    },
-    {
-        name: 'ミサキ',
-        imageUrl: 'https://pub-0238f59b333e4bf38dac0e35da86c1a0.r2.dev/uploads/%E9%8A%80%E5%BA%A7/1777514743942-46f8cae1-0e25-4945-9799-da9a6a945861-ChatGPT-Image-2026-4-27-05_24_29.png'
-    },
-    {
-        name: 'ユア',
-        imageUrl: 'https://pub-0238f59b333e4bf38dac0e35da86c1a0.r2.dev/uploads/%E9%8A%80%E5%BA%A7/1777514010037-779cd6f7-9e8d-419d-be7c-ecd6b9188475-ChatGPT-Image-2026-4-27-01_36_43.png'
-    },
-    {
+        characterId: 'ginza-ema',
         name: 'エマ',
-        imageUrl: 'https://pub-0238f59b333e4bf38dac0e35da86c1a0.r2.dev/uploads/%E9%8A%80%E5%BA%A7/1777514023282-13e5dd2e-6017-4531-9fb8-ddfa16d438d3-ChatGPT-Image-2026-4-27-01_55_46.png'
+        imageUrl: 'https://pub-0238f59b333e4bf38dac0e35da86c1a0.r2.dev/uploads/%E9%8A%80%E5%BA%A7/1777611017157-376855dd-16ba-4292-8d0c-2e79e278e241-kabuki03.png'
     },
     {
+        characterId: 'ginza-rio',
         name: 'リオ',
-        imageUrl: 'https://pub-0238f59b333e4bf38dac0e35da86c1a0.r2.dev/uploads/%E9%8A%80%E5%BA%A7/1777514743626-7dd8f5f0-af8e-49e4-85d3-6c3c4a554aff-ChatGPT-Image-2026-4-27-08_07_23.png'
+        imageUrl: 'https://pub-0238f59b333e4bf38dac0e35da86c1a0.r2.dev/uploads/%E9%8A%80%E5%BA%A7/1777611017083-2ee9140e-907f-45ff-8e78-acaf476fe4e3-kabuki05.png'
     },
     {
+        characterId: 'ginza-aya',
         name: 'アヤ',
-        imageUrl: 'https://pub-0238f59b333e4bf38dac0e35da86c1a0.r2.dev/uploads/%E9%8A%80%E5%BA%A7/1777514743581-1c5b41e2-820e-4eb4-b582-408da535f670-ChatGPT-Image-2026-4-27-05_34_17.png'
+        imageUrl: 'https://pub-0238f59b333e4bf38dac0e35da86c1a0.r2.dev/uploads/%E9%8A%80%E5%BA%A7/1777611017067-cdc6ebba-23b6-497b-a835-1dc221078c42-kabuki09.png'
     },
     {
+        characterId: 'ginza-noa',
         name: 'ノア',
-        imageUrl: 'https://pub-0238f59b333e4bf38dac0e35da86c1a0.r2.dev/uploads/%E9%8A%80%E5%BA%A7/1777514743625-57718cc2-612b-4914-935f-56969d3fa1b9-ChatGPT-Image-2026-4-27-05_54_16.png'
+        imageUrl: 'https://pub-0238f59b333e4bf38dac0e35da86c1a0.r2.dev/uploads/%E9%8A%80%E5%BA%A7/1777611016888-54e667d9-47fe-416c-8909-46b6a9ac2b83-kabuki01.png'
+    },
+    {
+        characterId: 'ginza-reina',
+        name: 'レイナ',
+        imageUrl: 'https://pub-0238f59b333e4bf38dac0e35da86c1a0.r2.dev/uploads/%E9%8A%80%E5%BA%A7/1777611017071-a06dabd4-643a-4f0c-a36c-ec9a22bde9e8-kabuki02.png'
+    },
+    {
+        characterId: 'ginza-misaki',
+        name: 'ミサキ',
+        imageUrl: 'https://pub-0238f59b333e4bf38dac0e35da86c1a0.r2.dev/uploads/%E9%8A%80%E5%BA%A7/1777611016880-7e3fe2d2-25c3-4552-89c6-d67a6d5c238e-kabuki06.png'
+    },
+    {
+        characterId: 'ginza-core',
+        name: 'コア',
+        imageUrl: 'https://pub-0238f59b333e4bf38dac0e35da86c1a0.r2.dev/uploads/%E9%8A%80%E5%BA%A7/1777611016892-c373732f-4f9b-4f79-b05d-ae92fec06aec-kabuki07.png'
+    }
+];
+
+export const ginzaBoardSlotDefinitions = [
+    {
+        slotId: 1,
+        slotOrder: 0,
+        charmPoints: 2,
+        itemAssetName: 'sake_01',
+        itemLabel: 'Sake 01',
+        itemImageUrl: 'https://pub-0238f59b333e4bf38dac0e35da86c1a0.r2.dev/uploads/%E9%8A%80%E5%BA%A7-%E9%81%93%E5%85%B7/1777615747526-1d939810-f728-421d-8739-7a9531ba32d9-sake01.png',
+        itemIconUrl: 'https://pub-0238f59b333e4bf38dac0e35da86c1a0.r2.dev/uploads/%E9%8A%80%E5%BA%A7-ICON/1777617306158-0263adb6-f340-46f9-86d6-0af83cdc0693-ChatGPT-Image-2026-5-1-02_20_07.png'
+    },
+    {
+        slotId: 2,
+        slotOrder: 1,
+        charmPoints: 2,
+        itemAssetName: 'sake_02',
+        itemLabel: 'Sake 02',
+        itemImageUrl: 'https://pub-0238f59b333e4bf38dac0e35da86c1a0.r2.dev/uploads/%E9%8A%80%E5%BA%A7-%E9%81%93%E5%85%B7/1777615747526-9a9a151f-f152-4635-9a2a-b8c32b9b980c-sake04.png',
+        itemIconUrl: 'https://pub-0238f59b333e4bf38dac0e35da86c1a0.r2.dev/uploads/%E9%8A%80%E5%BA%A7-ICON/1777617306158-012e2f1c-59e5-422c-92f5-c2d836144343-ChatGPT-Image-2026-5-1-02_23_19.png'
+    },
+    {
+        slotId: 3,
+        slotOrder: 2,
+        charmPoints: 2,
+        itemAssetName: 'sake_03',
+        itemLabel: 'Sake 03',
+        itemImageUrl: 'https://pub-0238f59b333e4bf38dac0e35da86c1a0.r2.dev/uploads/%E9%8A%80%E5%BA%A7-%E9%81%93%E5%85%B7/1777615747526-e155ac1c-e3f2-414c-8d9b-3b454afc0823-sake02.png',
+        itemIconUrl: 'https://pub-0238f59b333e4bf38dac0e35da86c1a0.r2.dev/uploads/%E9%8A%80%E5%BA%A7-ICON/1777617306158-fed18579-b61e-4e96-b3ea-38aedbb1801a-ChatGPT-Image-2026-5-1-02_11_49.png'
+    },
+    {
+        slotId: 4,
+        slotOrder: 3,
+        charmPoints: 3,
+        itemAssetName: 'sake_04',
+        itemLabel: 'Sake 04',
+        itemImageUrl: 'https://pub-0238f59b333e4bf38dac0e35da86c1a0.r2.dev/uploads/%E9%8A%80%E5%BA%A7-%E9%81%93%E5%85%B7/1777615747526-012c5d91-d2d6-4726-8a19-447bfc9ca070-sake03.png',
+        itemIconUrl: 'https://pub-0238f59b333e4bf38dac0e35da86c1a0.r2.dev/uploads/%E9%8A%80%E5%BA%A7-ICON/1777617306158-5b3899fd-2738-420f-9069-aa1f7134f55c-ChatGPT-Image-2026-5-1-02_31_22.png'
+    },
+    {
+        slotId: 5,
+        slotOrder: 4,
+        charmPoints: 3,
+        itemAssetName: 'sake_05',
+        itemLabel: 'Sake 05',
+        itemImageUrl: 'https://pub-0238f59b333e4bf38dac0e35da86c1a0.r2.dev/uploads/%E9%8A%80%E5%BA%A7-%E9%81%93%E5%85%B7/1777615747526-793b7fef-4ab2-4d82-bb7d-371961167537-sake05.png',
+        itemIconUrl: 'https://pub-0238f59b333e4bf38dac0e35da86c1a0.r2.dev/uploads/%E9%8A%80%E5%BA%A7-ICON/1777617306158-43d08d05-b5ba-4c51-b6ad-d7015306c8f7-ChatGPT-Image-2026-5-1-02_25_06.png'
+    },
+    {
+        slotId: 6,
+        slotOrder: 5,
+        charmPoints: 4,
+        itemAssetName: 'sake_06',
+        itemLabel: 'Sake 06',
+        itemImageUrl: 'https://pub-0238f59b333e4bf38dac0e35da86c1a0.r2.dev/uploads/%E9%8A%80%E5%BA%A7-%E9%81%93%E5%85%B7/1777615747526-34f98da0-a037-4a34-9b00-9018b8da6ff0-sake06.png',
+        itemIconUrl: 'https://pub-0238f59b333e4bf38dac0e35da86c1a0.r2.dev/uploads/%E9%8A%80%E5%BA%A7-ICON/1777617306158-2ef254e2-0aad-4286-98d8-c261fc9e33ed-ChatGPT-Image-2026-5-1-02_27_04.png'
+    },
+    {
+        slotId: 7,
+        slotOrder: 6,
+        charmPoints: 5,
+        itemAssetName: 'sake_07',
+        itemLabel: 'Sake 07',
+        itemImageUrl: 'https://pub-0238f59b333e4bf38dac0e35da86c1a0.r2.dev/uploads/%E9%8A%80%E5%BA%A7-%E9%81%93%E5%85%B7/1777615747526-4f45b398-ff3d-4800-8856-3149f3757229-sake07.png',
+        itemIconUrl: 'https://pub-0238f59b333e4bf38dac0e35da86c1a0.r2.dev/uploads/%E9%8A%80%E5%BA%A7-ICON/1777617306158-434f9580-6456-45aa-b5df-3d91a36c1a52-ChatGPT-Image-2026-5-1-02_28_43.png'
     }
 ];
 
 export const akatsukiGeishaData = [
-    {
-        name: '火威青',
-        imageUrl: '/images/geisha/akatsuki/ao.jpg'
-    },
-    {
-        name: '潤羽るしあ',
-        imageUrl: '/images/geisha/akatsuki/lushia.jpg'
-    },
-    {
-        name: '沙花叉クロヱ',
-        imageUrl: '/images/geisha/akatsuki/sakamata.jpg'
-    },
-    {
-        name: 'Gawr Gura',
-        imageUrl: '/images/geisha/akatsuki/gura.jpg'
-    },
-    {
-        name: '湊あくあ',
-        imageUrl: '/images/geisha/akatsuki/aqua.jpg'
-    },
-    {
-        name: '天音かなた',
-        imageUrl: '/images/geisha/akatsuki/kanata.jpg'
-    },
-    {
-        name: '桐生ココ',
-        imageUrl: '/images/geisha/akatsuki/coco.png'
-    }
+    { name: '火威青', imageUrl: '/images/geisha/akatsuki/ao.jpg' },
+    { name: '潤羽るしあ', imageUrl: '/images/geisha/akatsuki/lushia.jpg' },
+    { name: '沙花叉クロヱ', imageUrl: '/images/geisha/akatsuki/sakamata.jpg' },
+    { name: 'Gawr Gura', imageUrl: '/images/geisha/akatsuki/gura.jpg' },
+    { name: '湊あくあ', imageUrl: '/images/geisha/akatsuki/aqua.jpg' },
+    { name: '天音かなた', imageUrl: '/images/geisha/akatsuki/kanata.jpg' },
+    { name: '桐生ココ', imageUrl: '/images/geisha/akatsuki/coco.png' }
 ];
 
 export const onesanGeishaData = [
-    {
-        name: 'アキ・ローゼンタール',
-        imageUrl: '/images/geisha/onesan/aki.jpg'
-    },
-    {
-        name: '癒月ちょこ',
-        imageUrl: '/images/geisha/onesan/choko.jpg'
-    },
-    {
-        name: 'ときのそら',
-        imageUrl: '/images/geisha/onesan/sora.jpg'
-    },
-    {
-        name: 'Mori Calliope',
-        imageUrl: '/images/geisha/onesan/cali.jpg'
-    },
-    {
-        name: 'AZKi',
-        imageUrl: '/images/geisha/onesan/azki.jpg'
-    },
-    {
-        name: 'Elizabeth Rose Bloodflame',
-        imageUrl: '/images/geisha/onesan/Elizabeth.jpg'
-    },
-    {
-        name: 'Nerissa Ravencroft',
-        imageUrl: '/images/geisha/onesan/Nerissa.png'
-    }
+    { name: 'アキ・ローゼンタール', imageUrl: '/images/geisha/onesan/aki.jpg' },
+    { name: '癒月ちょこ', imageUrl: '/images/geisha/onesan/choko.jpg' },
+    { name: 'ときのそら', imageUrl: '/images/geisha/onesan/sora.jpg' },
+    { name: 'Mori Calliope', imageUrl: '/images/geisha/onesan/cali.jpg' },
+    { name: 'AZKi', imageUrl: '/images/geisha/onesan/azki.jpg' },
+    { name: 'Elizabeth Rose Bloodflame', imageUrl: '/images/geisha/onesan/Elizabeth.jpg' },
+    { name: 'Nerissa Ravencroft', imageUrl: '/images/geisha/onesan/Nerissa.png' }
 ];
 
 export const collaborationGeishaData = [
-    {
-        name: 'アキ・ローゼンタール',
-        imageUrl: '/images/geisha/collaboration/marin.jpg'
-    },
-    {
-        name: '癒月ちょこ',
-        imageUrl: '/images/geisha/collaboration/ren.jpg'
-    },
-    {
-        name: 'ときのそら',
-        imageUrl: '/images/geisha/collaboration/yoru.jpg'
-    },
-    {
-        name: 'Mori Calliope',
-        imageUrl: '/images/geisha/collaboration/megumin.jpg'
-    },
-    {
-        name: 'AZKi',
-        imageUrl: '/images/geisha/collaboration/arima.jpg'
-    },
-    {
-        name: 'Elizabeth Rose Bloodflame',
-        imageUrl: '/images/geisha/collaboration/furiren.jpg'
-    },
-    {
-        name: 'Nerissa Ravencroft',
-        imageUrl: '/images/geisha/collaboration/erien.jpg'
-    }
+    { name: 'アキ・ローゼンタール', imageUrl: '/images/geisha/collaboration/marin.jpg' },
+    { name: '癒月ちょこ', imageUrl: '/images/geisha/collaboration/ren.jpg' },
+    { name: 'ときのそら', imageUrl: '/images/geisha/collaboration/yoru.jpg' },
+    { name: 'Mori Calliope', imageUrl: '/images/geisha/collaboration/megumin.jpg' },
+    { name: 'AZKi', imageUrl: '/images/geisha/collaboration/arima.jpg' },
+    { name: 'Elizabeth Rose Bloodflame', imageUrl: '/images/geisha/collaboration/furiren.jpg' },
+    { name: 'Nerissa Ravencroft', imageUrl: '/images/geisha/collaboration/erien.jpg' }
 ];
 
 const geishaSetMap = {
-    default: geishaData,
+    default: ginzaCharacterPool,
     akatsuki: akatsukiGeishaData,
     onesan: onesanGeishaData,
     collaboration: collaborationGeishaData
 };
-// 魅力值分布（對應藝妓順序）
-export const charmPointsDistribution = [2, 2, 2, 3, 3, 4, 5];
 
-// 建立藝妓基礎資料（含固定魅力值）
-const buildBaseGeishaData = (setKey = 'default') => {
-    const data = geishaSetMap[setKey] ?? geishaData;
-    return data.map((geisha, index) => ({
-        id: index + 1,
-        name: geisha.name,
-        imageUrl: resolveAssetUrl(geisha.imageUrl),
-        charmPoints: charmPointsDistribution[index]
-    }));
+const defaultRandomSource = {
+    nextInt(maxExclusive) {
+        return Math.floor(Math.random() * maxExclusive);
+    },
+    nextToken() {
+        return Math.random().toString(36).slice(2, 8);
+    }
 };
 
-// 洗牌工具（Fisher-Yates）
-const shuffleArray = (array) => {
+const normalizeRandomSource = (randomSource = {}) => ({
+    nextInt: typeof randomSource.nextInt === 'function'
+        ? (maxExclusive) => randomSource.nextInt(maxExclusive)
+        : (maxExclusive) => defaultRandomSource.nextInt(maxExclusive),
+    nextToken: typeof randomSource.nextToken === 'function'
+        ? () => randomSource.nextToken()
+        : () => defaultRandomSource.nextToken()
+});
+
+export const createDeterministicRandomSource = (sequence = []) => {
+    let cursor = 0;
+    return {
+        nextInt(maxExclusive) {
+            const raw = sequence.length > 0 ? sequence[cursor % sequence.length] : 0;
+            cursor += 1;
+            return Math.abs(raw) % maxExclusive;
+        },
+        nextToken() {
+            const raw = sequence.length > 0 ? sequence[cursor % sequence.length] : cursor;
+            cursor += 1;
+            return `seed${String(Math.abs(raw)).padStart(4, '0')}`;
+        }
+    };
+};
+
+const shuffleArray = (array, randomSource = defaultRandomSource) => {
+    const source = normalizeRandomSource(randomSource);
     const result = [...array];
     for (let i = result.length - 1; i > 0; i -= 1) {
-        const j = Math.floor(Math.random() * (i + 1));
+        const j = source.nextInt(i + 1);
         [result[i], result[j]] = [result[j], result[i]];
     }
     return result;
 };
 
-// 取得固定順序的藝妓資料
-export const createBaseGeishas = (setKey = 'default') =>
-    buildBaseGeishaData(setKey).map((geisha) => ({
-        ...geisha,
+export const validateGinzaSetupData = (characterPool = ginzaCharacterPool, boardSlots = ginzaBoardSlotDefinitions) => {
+    if (!Array.isArray(characterPool) || characterPool.length < 7) {
+        throw new Error('Ginza character pool must contain at least seven characters.');
+    }
+
+    const characterIds = new Set();
+    characterPool.forEach((character) => {
+        if (!character?.characterId || !character?.name || !character?.imageUrl) {
+            throw new Error('Ginza character records must include characterId, name, and imageUrl.');
+        }
+        if (characterIds.has(character.characterId)) {
+            throw new Error(`Duplicate Ginza characterId detected: ${character.characterId}`);
+        }
+        characterIds.add(character.characterId);
+    });
+
+    if (!Array.isArray(boardSlots) || boardSlots.length !== 7) {
+        throw new Error('Ginza board slot definitions must contain exactly seven entries.');
+    }
+
+    const slotIds = new Set();
+    const slotOrders = new Set();
+    const charms = [];
+
+    boardSlots.forEach((slot) => {
+        if (
+            typeof slot?.slotId !== 'number' ||
+            typeof slot?.slotOrder !== 'number' ||
+            typeof slot?.charmPoints !== 'number' ||
+            !slot?.itemAssetName ||
+            !slot?.itemLabel ||
+            !slot?.itemImageUrl ||
+            !slot?.itemIconUrl
+        ) {
+            throw new Error('Each Ginza board slot must include slotId, slotOrder, charmPoints, itemAssetName, itemLabel, itemImageUrl, and itemIconUrl.');
+        }
+        if (slotIds.has(slot.slotId)) {
+            throw new Error(`Duplicate Ginza slotId detected: ${slot.slotId}`);
+        }
+        if (slotOrders.has(slot.slotOrder)) {
+            throw new Error(`Duplicate Ginza slotOrder detected: ${slot.slotOrder}`);
+        }
+        slotIds.add(slot.slotId);
+        slotOrders.add(slot.slotOrder);
+        charms.push(slot.charmPoints);
+    });
+
+    const sortedCharmKey = charms.sort((a, b) => a - b).join(',');
+    if (sortedCharmKey !== [...charmPointsDistribution].sort((a, b) => a - b).join(',')) {
+        throw new Error('Ginza board slot charm distribution must be 2,2,2,3,3,4,5.');
+    }
+};
+
+const createLegacyGeishas = (setKey = 'default') => {
+    const data = geishaSetMap[setKey] ?? geishaSetMap.default;
+    return data.map((geisha, index) => ({
+        id: index + 1,
+        name: geisha.name,
+        imageUrl: resolveAssetUrl(geisha.imageUrl),
+        charmPoints: charmPointsDistribution[index],
         controlledBy: null
     }));
+};
 
-// 取得固定順序的藝妓資料（依 index 對應魅力值）
-export const createRandomizedGeishas = (setKey = 'default') => createBaseGeishas(setKey);
+const createGinzaGeishas = (options = {}) => {
+    const {
+        randomSource = defaultRandomSource,
+        characterPool = ginzaCharacterPool,
+        boardSlots = ginzaBoardSlotDefinitions
+    } = options;
 
-// 根據藝妓魅力值建立牌庫（每位藝妓的卡牌數量等於魅力值）
-export const buildDeckForGeishas = (geishas) => {
+    validateGinzaSetupData(characterPool, boardSlots);
+
+    const selectedCharacters = shuffleArray(characterPool, randomSource).slice(0, 7);
+    const orderedSlots = [...boardSlots].sort((a, b) => a.slotOrder - b.slotOrder);
+
+    return orderedSlots.map((slot, index) => {
+        const character = selectedCharacters[index];
+        return {
+            id: slot.slotId,
+            characterId: character.characterId,
+            boardSlotId: slot.slotId,
+            name: character.name,
+            imageUrl: resolveAssetUrl(character.imageUrl),
+            charmPoints: slot.charmPoints,
+            controlledBy: null
+        };
+    });
+};
+
+export const createBaseGeishas = (setKey = 'default', options = {}) => {
+    if (setKey === 'default') {
+        return createGinzaGeishas(options);
+    }
+
+    return createLegacyGeishas(setKey);
+};
+
+export const createRandomizedGeishas = (setKey = 'default', options = {}) => createBaseGeishas(setKey, options);
+
+export const cloneGeishasForNextRound = (geishas = []) => geishas.map((geisha) => ({ ...geisha }));
+
+const buildGinzaCardForGeisha = (geisha, copy, randomSource = defaultRandomSource) => {
+    const source = normalizeRandomSource(randomSource);
+    const boardSlot = ginzaBoardSlotDefinitions.find((slot) => slot.slotId === geisha.boardSlotId);
+    if (!boardSlot) {
+        throw new Error(`Missing Ginza board slot definition for slot ${geisha.boardSlotId}`);
+    }
+
+    return {
+        id: `card-${geisha.id}-${copy}-${source.nextToken()}`,
+        geishaId: geisha.id,
+        type: boardSlot.itemAssetName,
+        boardSlotId: boardSlot.slotId,
+        itemAssetName: boardSlot.itemAssetName,
+        itemLabel: boardSlot.itemLabel,
+        itemImageUrl: boardSlot.itemImageUrl,
+        itemIconUrl: boardSlot.itemIconUrl
+    };
+};
+
+export const buildDeckForGeishas = (geishas, options = {}) => {
+    const { randomSource = defaultRandomSource } = options;
     /** @type {ItemCard[]} */
     const cards = [];
 
     geishas.forEach((geisha) => {
         const copies = geisha.charmPoints ?? 0;
         for (let copy = 0; copy < copies; copy += 1) {
-            cards.push({
-                id: `card-${geisha.id}-${copy}-${Math.random().toString(36).slice(2, 8)}`,
-                geishaId: geisha.id,
-                type: `geisha-${geisha.id}`
-            });
+            if (geisha.boardSlotId) {
+                cards.push(buildGinzaCardForGeisha(geisha, copy, randomSource));
+            } else {
+                const source = normalizeRandomSource(randomSource);
+                cards.push({
+                    id: `card-${geisha.id}-${copy}-${source.nextToken()}`,
+                    geishaId: geisha.id,
+                    type: `geisha-${geisha.id}`
+                });
+            }
         }
     });
 
-    const shuffled = shuffleArray(cards);
+    const shuffled = shuffleArray(cards, randomSource);
     const removedCard = shuffled.pop() ?? null;
 
     return {
