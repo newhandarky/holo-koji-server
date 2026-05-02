@@ -125,43 +125,6 @@ export const ginzaBoardSlotDefinitions = [
     }
 ];
 
-export const akatsukiGeishaData = [
-    { name: '火威青', imageUrl: '/images/geisha/akatsuki/ao.jpg' },
-    { name: '潤羽るしあ', imageUrl: '/images/geisha/akatsuki/lushia.jpg' },
-    { name: '沙花叉クロヱ', imageUrl: '/images/geisha/akatsuki/sakamata.jpg' },
-    { name: 'Gawr Gura', imageUrl: '/images/geisha/akatsuki/gura.jpg' },
-    { name: '湊あくあ', imageUrl: '/images/geisha/akatsuki/aqua.jpg' },
-    { name: '天音かなた', imageUrl: '/images/geisha/akatsuki/kanata.jpg' },
-    { name: '桐生ココ', imageUrl: '/images/geisha/akatsuki/coco.png' }
-];
-
-export const onesanGeishaData = [
-    { name: 'アキ・ローゼンタール', imageUrl: '/images/geisha/onesan/aki.jpg' },
-    { name: '癒月ちょこ', imageUrl: '/images/geisha/onesan/choko.jpg' },
-    { name: 'ときのそら', imageUrl: '/images/geisha/onesan/sora.jpg' },
-    { name: 'Mori Calliope', imageUrl: '/images/geisha/onesan/cali.jpg' },
-    { name: 'AZKi', imageUrl: '/images/geisha/onesan/azki.jpg' },
-    { name: 'Elizabeth Rose Bloodflame', imageUrl: '/images/geisha/onesan/Elizabeth.jpg' },
-    { name: 'Nerissa Ravencroft', imageUrl: '/images/geisha/onesan/Nerissa.png' }
-];
-
-export const collaborationGeishaData = [
-    { name: 'アキ・ローゼンタール', imageUrl: '/images/geisha/collaboration/marin.jpg' },
-    { name: '癒月ちょこ', imageUrl: '/images/geisha/collaboration/ren.jpg' },
-    { name: 'ときのそら', imageUrl: '/images/geisha/collaboration/yoru.jpg' },
-    { name: 'Mori Calliope', imageUrl: '/images/geisha/collaboration/megumin.jpg' },
-    { name: 'AZKi', imageUrl: '/images/geisha/collaboration/arima.jpg' },
-    { name: 'Elizabeth Rose Bloodflame', imageUrl: '/images/geisha/collaboration/furiren.jpg' },
-    { name: 'Nerissa Ravencroft', imageUrl: '/images/geisha/collaboration/erien.jpg' }
-];
-
-const geishaSetMap = {
-    default: ginzaCharacterPool,
-    akatsuki: akatsukiGeishaData,
-    onesan: onesanGeishaData,
-    collaboration: collaborationGeishaData
-};
-
 const defaultRandomSource = {
     nextInt(maxExclusive) {
         return Math.floor(Math.random() * maxExclusive);
@@ -259,17 +222,6 @@ export const validateGinzaSetupData = (characterPool = ginzaCharacterPool, board
     }
 };
 
-const createLegacyGeishas = (setKey = 'default') => {
-    const data = geishaSetMap[setKey] ?? geishaSetMap.default;
-    return data.map((geisha, index) => ({
-        id: index + 1,
-        name: geisha.name,
-        imageUrl: resolveAssetUrl(geisha.imageUrl),
-        charmPoints: charmPointsDistribution[index],
-        controlledBy: null
-    }));
-};
-
 const createGinzaGeishas = (options = {}) => {
     const {
         randomSource = defaultRandomSource,
@@ -297,11 +249,11 @@ const createGinzaGeishas = (options = {}) => {
 };
 
 export const createBaseGeishas = (setKey = 'default', options = {}) => {
-    if (setKey === 'default') {
-        return createGinzaGeishas(options);
+    if (setKey !== 'default') {
+        throw new Error(`Unsupported geisha set: ${setKey}`);
     }
 
-    return createLegacyGeishas(setKey);
+    return createGinzaGeishas(options);
 };
 
 export const createRandomizedGeishas = (setKey = 'default', options = {}) => createBaseGeishas(setKey, options);
@@ -335,16 +287,10 @@ export const buildDeckForGeishas = (geishas, options = {}) => {
     geishas.forEach((geisha) => {
         const copies = geisha.charmPoints ?? 0;
         for (let copy = 0; copy < copies; copy += 1) {
-            if (geisha.boardSlotId) {
-                cards.push(buildGinzaCardForGeisha(geisha, copy, randomSource));
-            } else {
-                const source = normalizeRandomSource(randomSource);
-                cards.push({
-                    id: `card-${geisha.id}-${copy}-${source.nextToken()}`,
-                    geishaId: geisha.id,
-                    type: `geisha-${geisha.id}`
-                });
+            if (!geisha.boardSlotId) {
+                throw new Error(`Missing boardSlotId for geisha ${geisha.id}`);
             }
+            cards.push(buildGinzaCardForGeisha(geisha, copy, randomSource));
         }
     });
 

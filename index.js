@@ -34,6 +34,12 @@ const normalizeNpcDifficulty = (difficulty) => {
     return 'easy';
 };
 
+const DEFAULT_GEISHA_SET = 'default';
+const LEGACY_GEISHA_SET_ERROR_MESSAGE = '不支援舊版藝妓組合資料，請重新建立對戰。';
+const LEGACY_ROOM_SNAPSHOT_ERROR_MESSAGE = '不支援舊房間資料，請重新建立對戰。';
+
+const isSupportedGeishaSet = (geishaSet) => geishaSet === DEFAULT_GEISHA_SET || geishaSet === undefined || geishaSet === null;
+
 const normalizePlayerMeta = (playerId, payload = {}) => {
     const displayName = typeof payload.displayName === 'string' && payload.displayName.trim()
         ? payload.displayName.trim()
@@ -111,7 +117,7 @@ class GameRoom {
         // 房主玩家 ID
         this.hostId = null;
         // 藝妓組合
-        this.geishaSet = 'default';
+        this.geishaSet = DEFAULT_GEISHA_SET;
         this.orderDecisionState = {
             isDeciding: false,
             result: null,
@@ -217,7 +223,7 @@ class GameRoom {
 
     regenerateBaseGeishas() {
         try {
-            this.baseGeishas = createRandomizedGeishas(this.geishaSet ?? 'default');
+            this.baseGeishas = createRandomizedGeishas(this.geishaSet ?? DEFAULT_GEISHA_SET);
             return true;
         } catch (error) {
             console.error(`❌ 房間 ${this.roomId} 建立藝妓資料失敗:`, error);
@@ -363,7 +369,7 @@ class GameRoom {
         }
 
         if (!this.gameState.geishaSet) {
-            this.gameState.geishaSet = this.geishaSet ?? 'default';
+            this.gameState.geishaSet = this.geishaSet ?? DEFAULT_GEISHA_SET;
         }
 
         const sanitizedPlayers = this.gameState.players.map((player) => {
@@ -2061,12 +2067,17 @@ class GameRoom {
 // 由 Redis 快照還原房間（只重建必要狀態）
 const restoreRoomFromSnapshot = (snapshot) => {
     if (!snapshot?.roomId) {
-        return null;
+        return { room: null, errorMessage: LEGACY_ROOM_SNAPSHOT_ERROR_MESSAGE };
+    }
+
+    const snapshotGeishaSet = snapshot.geishaSet ?? snapshot.gameState?.geishaSet ?? DEFAULT_GEISHA_SET;
+    if (!isSupportedGeishaSet(snapshotGeishaSet)) {
+        return { room: null, errorMessage: LEGACY_ROOM_SNAPSHOT_ERROR_MESSAGE };
     }
 
     const room = new GameRoom(snapshot.roomId);
     room.hostId = snapshot.hostId ?? null;
-    room.geishaSet = snapshot.geishaSet ?? snapshot.gameState?.geishaSet ?? 'default';
+    room.geishaSet = DEFAULT_GEISHA_SET;
     room.npcId = snapshot.npcId ?? null;
     room.npcDifficulty = snapshot.npcDifficulty ?? null;
     room.createdAt = snapshot.createdAt ?? Date.now();
@@ -2081,7 +2092,11 @@ const restoreRoomFromSnapshot = (snapshot) => {
         room.players.push({ playerId: room.npcId, ws: npcSocket, isNpc: true });
     }
 
-    return room;
+    if (room.gameState) {
+        room.gameState.geishaSet = DEFAULT_GEISHA_SET;
+    }
+
+    return { room, errorMessage: null };
 };
 
 // WebSocket 連線入口（處理玩家進出與訊息）
@@ -2148,9 +2163,13 @@ wss.on('connection', (ws, req) => {
 
         const mode = payload.mode === 'npc' ? 'npc' : 'online';
         const aiDifficulty = normalizeNpcDifficulty(payload.aiDifficulty ?? 'easy');
-        const geishaSet = (payload.geishaSet === 'akatsuki' || payload.geishaSet === 'onesan' || payload.geishaSet === 'collaboration')
-            ? payload.geishaSet
-            : 'default';
+        if (!isSupportedGeishaSet(payload.geishaSet)) {
+            ws.send(JSON.stringify({
+                type: 'ERROR',
+                payload: { message: LEGACY_GEISHA_SET_ERROR_MESSAGE }
+            }));
+            return;
+        }
 
         const roomId = generateRoomId();
         const room = new GameRoom(roomId);
@@ -2159,7 +2178,7 @@ wss.on('connection', (ws, req) => {
         currentPlayerId = payload.playerId;
         currentRoomId = roomId;
         room.hostId = currentPlayerId;
-        room.geishaSet = geishaSet;
+        room.geishaSet = DEFAULT_GEISHA_SET;
         if (!room.regenerateBaseGeishas()) {
             gameRooms.delete(roomId);
             currentRoomId = null;
@@ -2188,7 +2207,7 @@ wss.on('connection', (ws, req) => {
             roomId,
             room.players.map(p => p.playerId),
             room.baseGeishas,
-            room.geishaSet,
+            DEFAULT_GEISHA_SET,
             room.getPlayerMetaMap()
         );
         initialGameState.hostId = room.hostId;
@@ -2222,9 +2241,16 @@ wss.on('connection', (ws, req) => {
         if (!room) {
             const snapshot = await loadRoomSnapshot(roomId);
             if (snapshot) {
-                room = restoreRoomFromSnapshot(snapshot);
+                const restoreResult = restoreRoomFromSnapshot(snapshot);
+                room = restoreResult.room;
                 if (room) {
                     gameRooms.set(roomId, room);
+                } else if (restoreResult.errorMessage) {
+                    ws.send(JSON.stringify({
+                        type: 'ERROR',
+                        payload: { message: restoreResult.errorMessage }
+                    }));
+                    return;
                 }
             }
         }
@@ -2279,7 +2305,7 @@ wss.on('connection', (ws, req) => {
             roomId,
             room.players.map(p => p.playerId),
             room.baseGeishas,
-            room.geishaSet,
+            DEFAULT_GEISHA_SET,
             room.getPlayerMetaMap()
         );
         updatedGameState.hostId = room.hostId;
@@ -2384,13 +2410,17 @@ function cloneGeishas(geishas) {
 }
 
 // 建立等待中的遊戲狀態（玩家尚未滿或尚未開始）
-function createWaitingGameState(gameId, playerIds, geishas, geishaSet = 'default', playerMetaMap = {}) {
+function createWaitingGameState(gameId, playerIds, geishas, geishaSet = DEFAULT_GEISHA_SET, playerMetaMap = {}) {
+    if (!isSupportedGeishaSet(geishaSet)) {
+        throw new Error(`Unsupported geisha set in waiting state: ${String(geishaSet)}`);
+    }
+    const activeGeishaSet = DEFAULT_GEISHA_SET;
     return {
         gameId,
         hostId: null,
         players: playerIds.map(id => createPlayer(id, playerMetaMap[id])),
-        geishas: cloneGeishas(geishas ?? createBaseGeishas(geishaSet)),
-        geishaSet,
+        geishas: cloneGeishas(geishas ?? createBaseGeishas(activeGeishaSet)),
+        geishaSet: activeGeishaSet,
         currentPlayer: 0,
         phase: 'waiting',
         round: 1,
@@ -2414,7 +2444,7 @@ function createWaitingGameState(gameId, playerIds, geishas, geishaSet = 'default
 
 // 建立排序後的遊戲狀態（保留上一輪資料）
 function createGameStateWithOrder(gameId, orderedPlayerIds, geishas, existingState = null, playerMetaMap = {}) {
-    const baseGeishas = geishas ?? createBaseGeishas();
+    const baseGeishas = geishas ?? createBaseGeishas(DEFAULT_GEISHA_SET);
     const previousState = existingState ?? {};
 
     const players = orderedPlayerIds.map(playerId => {
@@ -2435,7 +2465,7 @@ function createGameStateWithOrder(gameId, orderedPlayerIds, geishas, existingSta
             hostId: previousState.hostId ?? null,
             players,
             geishas: cloneGeishas(baseGeishas),
-            geishaSet: previousState.geishaSet ?? 'default',
+            geishaSet: DEFAULT_GEISHA_SET,
             currentPlayer: 0,
             phase: 'playing',
             round: previousState.round ?? 1,

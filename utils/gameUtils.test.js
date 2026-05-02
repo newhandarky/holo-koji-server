@@ -73,6 +73,28 @@ test('invalid Ginza setup data fails fast', () => {
     );
 });
 
+test('legacy geisha set key is rejected', () => {
+    assert.throws(
+        () => createRandomizedGeishas('akatsuki'),
+        /Unsupported geisha set/
+    );
+});
+
+test('deck generation rejects geishas without board slot binding', () => {
+    const legacyLikeGeishas = [{
+        id: 1,
+        name: 'legacy',
+        imageUrl: '',
+        charmPoints: 2,
+        controlledBy: null
+    }];
+
+    assert.throws(
+        () => buildDeckForGeishas(legacyLikeGeishas),
+        /Missing boardSlotId/
+    );
+});
+
 test('next-round clone preserves the same selected board identity and control state', () => {
     const board = createRandomizedGeishas('default', {
         randomSource: createDeterministicRandomSource([3, 1, 4, 1, 5, 9, 2])
