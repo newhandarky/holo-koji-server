@@ -3,7 +3,17 @@ import express from 'express';
 import { createServer } from 'http';
 import { WebSocketServer } from 'ws';
 import cors from 'cors';
-import { createRandomizedGeishas, createBaseGeishas, buildDeckForGeishas, cloneGeishasForNextRound } from './utils/gameUtils.js';
+import {
+    DEFAULT_GEISHA_SET,
+    createRandomizedGeishas,
+    createBaseGeishas,
+    buildDeckForGeishas,
+    cloneGeishasForNextRound,
+    isSupportedGeishaSet,
+    normalizeGeishaSet,
+    resolveRestorableGeishaSet,
+    validateMatchBoardForSet
+} from './utils/gameUtils.js';
 import {
     deleteRoomSnapshot,
     isRedisEnabled,
@@ -34,11 +44,9 @@ const normalizeNpcDifficulty = (difficulty) => {
     return 'easy';
 };
 
-const DEFAULT_GEISHA_SET = 'default';
 const LEGACY_GEISHA_SET_ERROR_MESSAGE = '不支援舊版藝妓組合資料，請重新建立對戰。';
 const LEGACY_ROOM_SNAPSHOT_ERROR_MESSAGE = '不支援舊房間資料，請重新建立對戰。';
-
-const isSupportedGeishaSet = (geishaSet) => geishaSet === DEFAULT_GEISHA_SET || geishaSet === undefined || geishaSet === null;
+const GEISHA_SET_CONFIG_ERROR_MESSAGE = '角色組合資料設定錯誤，請重新建立對戰。';
 
 const normalizePlayerMeta = (playerId, payload = {}) => {
     const displayName = typeof payload.displayName === 'string' && payload.displayName.trim()
@@ -2070,14 +2078,22 @@ const restoreRoomFromSnapshot = (snapshot) => {
         return { room: null, errorMessage: LEGACY_ROOM_SNAPSHOT_ERROR_MESSAGE };
     }
 
-    const snapshotGeishaSet = snapshot.geishaSet ?? snapshot.gameState?.geishaSet ?? DEFAULT_GEISHA_SET;
-    if (!isSupportedGeishaSet(snapshotGeishaSet)) {
+    let snapshotGeishaSet = DEFAULT_GEISHA_SET;
+    try {
+        snapshotGeishaSet = resolveRestorableGeishaSet(snapshot);
+        if (snapshot.baseGeishas) {
+            validateMatchBoardForSet(snapshotGeishaSet, snapshot.baseGeishas);
+        }
+        if (snapshot.gameState?.geishas) {
+            validateMatchBoardForSet(snapshotGeishaSet, snapshot.gameState.geishas);
+        }
+    } catch (_error) {
         return { room: null, errorMessage: LEGACY_ROOM_SNAPSHOT_ERROR_MESSAGE };
     }
 
     const room = new GameRoom(snapshot.roomId);
     room.hostId = snapshot.hostId ?? null;
-    room.geishaSet = DEFAULT_GEISHA_SET;
+    room.geishaSet = snapshotGeishaSet;
     room.npcId = snapshot.npcId ?? null;
     room.npcDifficulty = snapshot.npcDifficulty ?? null;
     room.createdAt = snapshot.createdAt ?? Date.now();
@@ -2093,7 +2109,7 @@ const restoreRoomFromSnapshot = (snapshot) => {
     }
 
     if (room.gameState) {
-        room.gameState.geishaSet = DEFAULT_GEISHA_SET;
+        room.gameState.geishaSet = snapshotGeishaSet;
     }
 
     return { room, errorMessage: null };
@@ -2163,7 +2179,8 @@ wss.on('connection', (ws, req) => {
 
         const mode = payload.mode === 'npc' ? 'npc' : 'online';
         const aiDifficulty = normalizeNpcDifficulty(payload.aiDifficulty ?? 'easy');
-        if (!isSupportedGeishaSet(payload.geishaSet)) {
+        const requestedGeishaSet = normalizeGeishaSet(payload.geishaSet);
+        if (!isSupportedGeishaSet(requestedGeishaSet)) {
             ws.send(JSON.stringify({
                 type: 'ERROR',
                 payload: { message: LEGACY_GEISHA_SET_ERROR_MESSAGE }
@@ -2178,14 +2195,14 @@ wss.on('connection', (ws, req) => {
         currentPlayerId = payload.playerId;
         currentRoomId = roomId;
         room.hostId = currentPlayerId;
-        room.geishaSet = DEFAULT_GEISHA_SET;
+        room.geishaSet = requestedGeishaSet;
         if (!room.regenerateBaseGeishas()) {
             gameRooms.delete(roomId);
             currentRoomId = null;
             currentPlayerId = null;
             ws.send(JSON.stringify({
                 type: 'ERROR',
-                payload: { message: 'Ginza 對戰資料設定錯誤，無法建立對戰。' }
+                payload: { message: GEISHA_SET_CONFIG_ERROR_MESSAGE }
             }));
             return;
         }
@@ -2207,7 +2224,7 @@ wss.on('connection', (ws, req) => {
             roomId,
             room.players.map(p => p.playerId),
             room.baseGeishas,
-            DEFAULT_GEISHA_SET,
+            room.geishaSet,
             room.getPlayerMetaMap()
         );
         initialGameState.hostId = room.hostId;
@@ -2265,7 +2282,7 @@ wss.on('connection', (ws, req) => {
         if (!room.ensureBaseGeishas()) {
             ws.send(JSON.stringify({
                 type: 'ERROR',
-                payload: { message: 'Ginza 對戰資料設定錯誤，無法加入對戰。' }
+                payload: { message: GEISHA_SET_CONFIG_ERROR_MESSAGE }
             }));
             return;
         }
@@ -2305,7 +2322,7 @@ wss.on('connection', (ws, req) => {
             roomId,
             room.players.map(p => p.playerId),
             room.baseGeishas,
-            DEFAULT_GEISHA_SET,
+            room.geishaSet,
             room.getPlayerMetaMap()
         );
         updatedGameState.hostId = room.hostId;
@@ -2411,10 +2428,10 @@ function cloneGeishas(geishas) {
 
 // 建立等待中的遊戲狀態（玩家尚未滿或尚未開始）
 function createWaitingGameState(gameId, playerIds, geishas, geishaSet = DEFAULT_GEISHA_SET, playerMetaMap = {}) {
-    if (!isSupportedGeishaSet(geishaSet)) {
-        throw new Error(`Unsupported geisha set in waiting state: ${String(geishaSet)}`);
+    const activeGeishaSet = normalizeGeishaSet(geishaSet);
+    if (!isSupportedGeishaSet(activeGeishaSet)) {
+        throw new Error(`Unsupported geisha set in waiting state: ${String(activeGeishaSet)}`);
     }
-    const activeGeishaSet = DEFAULT_GEISHA_SET;
     return {
         gameId,
         hostId: null,
@@ -2444,8 +2461,12 @@ function createWaitingGameState(gameId, playerIds, geishas, geishaSet = DEFAULT_
 
 // 建立排序後的遊戲狀態（保留上一輪資料）
 function createGameStateWithOrder(gameId, orderedPlayerIds, geishas, existingState = null, playerMetaMap = {}) {
-    const baseGeishas = geishas ?? createBaseGeishas(DEFAULT_GEISHA_SET);
     const previousState = existingState ?? {};
+    const activeGeishaSet = normalizeGeishaSet(previousState.geishaSet);
+    if (!isSupportedGeishaSet(activeGeishaSet)) {
+        throw new Error(`Unsupported geisha set in ordered state: ${String(activeGeishaSet)}`);
+    }
+    const baseGeishas = geishas ?? createBaseGeishas(activeGeishaSet);
 
     const players = orderedPlayerIds.map(playerId => {
         const existingPlayer = previousState.players?.find(player => player.id === playerId);
@@ -2465,7 +2486,7 @@ function createGameStateWithOrder(gameId, orderedPlayerIds, geishas, existingSta
             hostId: previousState.hostId ?? null,
             players,
             geishas: cloneGeishas(baseGeishas),
-            geishaSet: DEFAULT_GEISHA_SET,
+            geishaSet: activeGeishaSet,
             currentPlayer: 0,
             phase: 'playing',
             round: previousState.round ?? 1,
