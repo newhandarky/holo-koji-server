@@ -288,9 +288,20 @@ export const getCharacterPoolForSet = (setKey = DEFAULT_GEISHA_SET) => {
     return characterPoolsBySet[activeSet];
 };
 
-export const resolveRestorableGeishaSet = (snapshot = {}) => {
-    const activeSet = normalizeGeishaSet(snapshot?.geishaSet ?? snapshot?.gameState?.geishaSet);
-    if (!isSupportedGeishaSet(activeSet)) {
+export const resolveRestorableGeishaSet = (
+    snapshot = {},
+    options = {}
+) => {
+    const {
+        isSupportedSet = isSupportedGeishaSet
+    } = options;
+    const snapshotSet = snapshot?.geishaSet ?? snapshot?.gameState?.geishaSet;
+    if (snapshotSet === undefined || snapshotSet === null || snapshotSet === '') {
+        throw new Error('Missing geisha set in room snapshot.');
+    }
+
+    const activeSet = normalizeGeishaSet(snapshotSet);
+    if (!isSupportedSet(activeSet)) {
         throw new Error(`Unsupported geisha set in room snapshot: ${String(activeSet)}`);
     }
     return activeSet;
@@ -306,6 +317,7 @@ export const validateMatchBoardForSet = (setKey = DEFAULT_GEISHA_SET, geishas = 
     }
 
     const boardSlotIds = new Set();
+    const characterIds = new Set();
     geishas.forEach((geisha) => {
         if (!geisha?.characterId || !validCharacterIds.has(geisha.characterId)) {
             throw new Error(`Match board for ${activeSet} contains a character outside the selected set.`);
@@ -313,11 +325,61 @@ export const validateMatchBoardForSet = (setKey = DEFAULT_GEISHA_SET, geishas = 
         if (!geisha?.boardSlotId || !validBoardSlotIds.has(geisha.boardSlotId)) {
             throw new Error(`Match board for ${activeSet} contains an unknown board slot.`);
         }
+        if (characterIds.has(geisha.characterId)) {
+            throw new Error(`Match board for ${activeSet} must contain unique characters.`);
+        }
         if (boardSlotIds.has(geisha.boardSlotId)) {
             throw new Error(`Match board for ${activeSet} must contain unique board slots.`);
         }
+        characterIds.add(geisha.characterId);
         boardSlotIds.add(geisha.boardSlotId);
     });
+};
+
+export const sanitizePendingInteractionForViewer = (pendingInteraction, viewerId) => {
+    if (!pendingInteraction) {
+        return null;
+    }
+
+    if (pendingInteraction.targetPlayerId === viewerId) {
+        return pendingInteraction;
+    }
+
+    if (pendingInteraction.type === 'GIFT_SELECTION') {
+        return {
+            type: pendingInteraction.type,
+            initiatorId: pendingInteraction.initiatorId,
+            targetPlayerId: pendingInteraction.targetPlayerId,
+            offeredCards: []
+        };
+    }
+
+    if (pendingInteraction.type === 'COMPETITION_SELECTION') {
+        return {
+            type: pendingInteraction.type,
+            initiatorId: pendingInteraction.initiatorId,
+            targetPlayerId: pendingInteraction.targetPlayerId,
+            groups: []
+        };
+    }
+
+    return null;
+};
+
+export const resolveRestorableBoardForSet = (snapshot = {}, setKey = DEFAULT_GEISHA_SET) => {
+    const resolvedBoard = snapshot?.baseGeishas ?? snapshot?.gameState?.geishas;
+
+    if (!resolvedBoard) {
+        throw new Error(`Missing match board for ${normalizeGeishaSet(setKey)} room snapshot.`);
+    }
+
+    validateMatchBoardForSet(setKey, resolvedBoard);
+
+    if (snapshot?.baseGeishas && snapshot?.gameState?.geishas) {
+        validateMatchBoardForSet(setKey, snapshot.gameState.geishas);
+    }
+
+    return resolvedBoard;
 };
 
 export const validateCharacterSetData = (setKey = DEFAULT_GEISHA_SET, characterPool = getCharacterPoolForSet(setKey)) => {
@@ -413,7 +475,127 @@ export const createBaseGeishas = (setKey = DEFAULT_GEISHA_SET, options = {}) => 
 
 export const createRandomizedGeishas = (setKey = DEFAULT_GEISHA_SET, options = {}) => createBaseGeishas(setKey, options);
 
+export const cloneGeishas = (geishas = []) => geishas.map((geisha) => ({ ...geisha }));
+
 export const cloneGeishasForNextRound = (geishas = []) => geishas.map((geisha) => ({ ...geisha }));
+
+export const createPlayer = (playerId, meta = {}) => ({
+    id: playerId,
+    name: meta.name ?? playerId,
+    lineUserId: meta.lineUserId,
+    avatarUrl: meta.avatarUrl,
+    hand: [],
+    playedCards: [],
+    secretCards: [],
+    discardedCards: [],
+    actionTokens: [
+        { type: 'secret', used: false },
+        { type: 'trade-off', used: false },
+        { type: 'gift', used: false },
+        { type: 'competition', used: false }
+    ],
+    score: {
+        charm: 0,
+        tokens: 0
+    }
+});
+
+export const createWaitingGameState = (
+    gameId,
+    playerIds,
+    geishas,
+    geishaSet = DEFAULT_GEISHA_SET,
+    playerMetaMap = {}
+) => {
+    const activeGeishaSet = normalizeGeishaSet(geishaSet);
+    if (!isSupportedGeishaSet(activeGeishaSet)) {
+        throw new Error(`Unsupported geisha set in waiting state: ${String(activeGeishaSet)}`);
+    }
+
+    return {
+        gameId,
+        hostId: null,
+        players: playerIds.map((id) => createPlayer(id, playerMetaMap[id])),
+        geishas: cloneGeishas(geishas ?? createBaseGeishas(activeGeishaSet)),
+        geishaSet: activeGeishaSet,
+        currentPlayer: 0,
+        phase: 'waiting',
+        round: 1,
+        winner: null,
+        orderDecision: {
+            isOpen: false,
+            phase: 'deciding',
+            players: playerIds,
+            result: undefined,
+            confirmations: [],
+            waitingFor: playerIds,
+            currentPlayer: playerIds[0] ?? ''
+        },
+        drawPile: [],
+        discardPile: [],
+        removedCard: null,
+        pendingInteraction: null,
+        lastAction: undefined
+    };
+};
+
+export const createGameStateWithOrder = (
+    gameId,
+    orderedPlayerIds,
+    geishas,
+    existingState = null,
+    playerMetaMap = {}
+) => {
+    const previousState = existingState ?? {};
+    const activeGeishaSet = normalizeGeishaSet(previousState.geishaSet);
+    if (!isSupportedGeishaSet(activeGeishaSet)) {
+        throw new Error(`Unsupported geisha set in ordered state: ${String(activeGeishaSet)}`);
+    }
+    const baseGeishas = geishas ?? createBaseGeishas(activeGeishaSet);
+
+    const players = orderedPlayerIds.map((playerId) => {
+        const existingPlayer = previousState.players?.find((player) => player.id === playerId);
+        if (existingPlayer) {
+            return {
+                ...existingPlayer,
+                actionTokens: existingPlayer.actionTokens.map((token) => ({ ...token, used: token.used ?? false }))
+            };
+        }
+
+        return createPlayer(playerId, playerMetaMap[playerId]);
+    });
+
+    return {
+        gameState: {
+            gameId,
+            hostId: previousState.hostId ?? null,
+            players,
+            geishas: cloneGeishas(baseGeishas),
+            geishaSet: activeGeishaSet,
+            currentPlayer: 0,
+            phase: 'playing',
+            round: previousState.round ?? 1,
+            winner: null,
+            orderDecision: {
+                isOpen: false,
+                phase: 'result',
+                players: orderedPlayerIds,
+                result: {
+                    firstPlayer: orderedPlayerIds[0],
+                    secondPlayer: orderedPlayerIds[1],
+                    order: orderedPlayerIds
+                },
+                confirmations: [...orderedPlayerIds],
+                waitingFor: []
+            },
+            drawPile: previousState.drawPile ?? [],
+            discardPile: previousState.discardPile ?? [],
+            removedCard: previousState.removedCard ?? null,
+            pendingInteraction: null,
+            lastAction: undefined
+        }
+    };
+};
 
 const buildGinzaCardForGeisha = (geisha, copy, randomSource = defaultRandomSource) => {
     const source = normalizeRandomSource(randomSource);

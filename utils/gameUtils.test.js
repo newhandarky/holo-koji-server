@@ -4,14 +4,19 @@ import {
     buildDeckForGeishas,
     cloneGeishasForNextRound,
     collaborationCharacterPool,
+    createGameStateWithOrder,
     createDeterministicRandomSource,
+    createPlayer,
     createRandomizedGeishas,
+    createWaitingGameState,
     ginzaBoardSlotDefinitions,
     ginzaCharacterPool,
     hololiveCharacterPool,
     isSupportedGeishaSet,
     normalizeGeishaSet,
+    resolveRestorableBoardForSet,
     resolveRestorableGeishaSet,
+    sanitizePendingInteractionForViewer,
     validateCharacterSetData,
     validateGinzaSetupData,
     validateMatchBoardForSet
@@ -149,11 +154,23 @@ test('Hololive character data validates as an available set', () => {
 test('room snapshot set resolution preserves supported sets and rejects unknown sets', () => {
     assert.equal(resolveRestorableGeishaSet({ geishaSet: 'collaboration' }), 'collaboration');
     assert.equal(resolveRestorableGeishaSet({ gameState: { geishaSet: 'hololive' } }), 'hololive');
-    assert.equal(resolveRestorableGeishaSet({}), 'default');
     assert.equal(resolveRestorableGeishaSet({ geishaSet: null, gameState: { geishaSet: 'hololive' } }), 'hololive');
 
     assert.throws(
+        () => resolveRestorableGeishaSet({}),
+        /Missing geisha set in room snapshot/
+    );
+
+    assert.throws(
         () => resolveRestorableGeishaSet({ geishaSet: 'akatsuki' }),
+        /Unsupported geisha set in room snapshot/
+    );
+
+    assert.throws(
+        () => resolveRestorableGeishaSet(
+            { geishaSet: 'hololive' },
+            { isSupportedSet: () => false }
+        ),
         /Unsupported geisha set in room snapshot/
     );
 });
@@ -178,6 +195,122 @@ test('restored match boards must belong to the selected character set', () => {
     assert.throws(
         () => validateMatchBoardForSet('hololive', invalidSlotBoard),
         /unknown board slot/
+    );
+
+    const duplicateCharacterBoard = hololiveBoard.map((geisha, index) => (
+        index === 6 ? { ...geisha, characterId: hololiveBoard[0].characterId } : geisha
+    ));
+    assert.throws(
+        () => validateMatchBoardForSet('hololive', duplicateCharacterBoard),
+        /unique characters/
+    );
+});
+
+test('room snapshots must include a valid seven-character board for restore', () => {
+    const hololiveBoard = createRandomizedGeishas('hololive', {
+        randomSource: createDeterministicRandomSource([1, 2, 3, 4, 5, 6, 7])
+    });
+
+    assert.deepEqual(
+        resolveRestorableBoardForSet({ baseGeishas: hololiveBoard }, 'hololive'),
+        hololiveBoard
+    );
+
+    assert.throws(
+        () => resolveRestorableBoardForSet({}, 'hololive'),
+        /Missing match board/
+    );
+
+    assert.throws(
+        () => resolveRestorableBoardForSet({ baseGeishas: hololiveBoard.slice(0, 6) }, 'hololive'),
+        /exactly seven geishas/
+    );
+});
+
+test('pending interactions are fully visible only to the responding player', () => {
+    const offeredCards = [
+        { id: 'gift-1', geishaId: 1, type: 'item' },
+        { id: 'gift-2', geishaId: 2, type: 'item' },
+        { id: 'gift-3', geishaId: 3, type: 'item' }
+    ];
+    const giftPending = {
+        type: 'GIFT_SELECTION',
+        initiatorId: 'player1',
+        targetPlayerId: 'player2',
+        offeredCards
+    };
+
+    assert.deepEqual(
+        sanitizePendingInteractionForViewer(giftPending, 'player2'),
+        giftPending
+    );
+    assert.deepEqual(
+        sanitizePendingInteractionForViewer(giftPending, 'player1'),
+        { ...giftPending, offeredCards: [] }
+    );
+
+    const competitionPending = {
+        type: 'COMPETITION_SELECTION',
+        initiatorId: 'player1',
+        targetPlayerId: 'player2',
+        groups: [[offeredCards[0], offeredCards[1]], [offeredCards[2], offeredCards[0]]]
+    };
+
+    assert.deepEqual(
+        sanitizePendingInteractionForViewer(competitionPending, 'player2'),
+        competitionPending
+    );
+    assert.deepEqual(
+        sanitizePendingInteractionForViewer(competitionPending, 'player1'),
+        { ...competitionPending, groups: [] }
+    );
+});
+
+test('waiting and ordered room states preserve the same room-level geishaSet identity', () => {
+    const collaborationBoard = createRandomizedGeishas('collaboration', {
+        randomSource: createDeterministicRandomSource([3, 1, 4, 1, 5, 9, 2])
+    });
+    const waitingState = createWaitingGameState(
+        'room-1',
+        ['player1', 'player2'],
+        collaborationBoard,
+        'collaboration',
+        {
+            player1: { name: 'Host' },
+            player2: { name: 'Joiner' }
+        }
+    );
+
+    assert.equal(waitingState.geishaSet, 'collaboration');
+    assert.deepEqual(
+        waitingState.geishas.map((geisha) => geisha.characterId),
+        collaborationBoard.map((geisha) => geisha.characterId)
+    );
+
+    const existingState = {
+        ...waitingState,
+        players: [
+            createPlayer('player1', { name: 'Host' }),
+            createPlayer('player2', { name: 'Joiner' })
+        ],
+        geishaSet: 'collaboration',
+        round: 2
+    };
+    existingState.players[0].actionTokens[0].used = true;
+
+    const { gameState } = createGameStateWithOrder(
+        'room-1',
+        ['player2', 'player1'],
+        collaborationBoard,
+        existingState
+    );
+
+    assert.equal(gameState.geishaSet, 'collaboration');
+    assert.equal(gameState.round, 2);
+    assert.equal(gameState.players[1].actionTokens[0].used, true);
+    assert.deepEqual(
+        gameState.geishas.map((geisha) => geisha.characterId),
+        collaborationBoard.map((geisha) => geisha.characterId)
     );
 });
 

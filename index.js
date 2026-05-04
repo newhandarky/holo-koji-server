@@ -6,13 +6,17 @@ import cors from 'cors';
 import {
     DEFAULT_GEISHA_SET,
     createRandomizedGeishas,
-    createBaseGeishas,
     buildDeckForGeishas,
     cloneGeishasForNextRound,
+    cloneGeishas,
+    createGameStateWithOrder,
+    createPlayer,
+    createWaitingGameState,
     isSupportedGeishaSet,
     normalizeGeishaSet,
+    resolveRestorableBoardForSet,
     resolveRestorableGeishaSet,
-    validateMatchBoardForSet
+    sanitizePendingInteractionForViewer
 } from './utils/gameUtils.js';
 import {
     deleteRoomSnapshot,
@@ -45,7 +49,7 @@ const normalizeNpcDifficulty = (difficulty) => {
 };
 
 const LEGACY_GEISHA_SET_ERROR_MESSAGE = '不支援舊版藝妓組合資料，請重新建立對戰。';
-const LEGACY_ROOM_SNAPSHOT_ERROR_MESSAGE = '不支援舊房間資料，請重新建立對戰。';
+const LEGACY_ROOM_SNAPSHOT_ERROR_MESSAGE = '房間資料無效，請重新建立對戰。';
 const GEISHA_SET_CONFIG_ERROR_MESSAGE = '角色組合資料設定錯誤，請重新建立對戰。';
 
 const normalizePlayerMeta = (playerId, payload = {}) => {
@@ -236,7 +240,7 @@ class GameRoom {
         } catch (error) {
             console.error(`❌ 房間 ${this.roomId} 建立藝妓資料失敗:`, error);
             this.players.forEach((player) => {
-                this.sendError(player.playerId, 'Ginza 對戰資料設定錯誤，無法建立對戰。');
+                this.sendError(player.playerId, GEISHA_SET_CONFIG_ERROR_MESSAGE);
             });
             return false;
         }
@@ -370,6 +374,19 @@ class GameRoom {
         });
     }
 
+    sendPendingInteractionState() {
+        if (!this.gameState?.pendingInteraction) {
+            return;
+        }
+
+        this.players.forEach((player) => {
+            this.sendToPlayer(player.playerId, {
+                type: 'PENDING_INTERACTION',
+                payload: sanitizePendingInteractionForViewer(this.gameState.pendingInteraction, player.playerId)
+            });
+        });
+    }
+
     // 將遊戲狀態整理成玩家可見版本（隱藏對手手牌與密約資訊）
     buildClientGameState(viewerId) {
         if (!this.gameState) {
@@ -397,7 +414,8 @@ class GameRoom {
             ...this.gameState,
             players: sanitizedPlayers,
             drawPile: [],
-            removedCard: null
+            removedCard: null,
+            pendingInteraction: sanitizePendingInteractionForViewer(this.gameState.pendingInteraction, viewerId)
         };
     }
 
@@ -1880,10 +1898,7 @@ class GameRoom {
 
         this.gameState.lastAction = { playerId: player.id, action: 'gift' };
 
-        this.broadcast({
-            type: 'PENDING_INTERACTION',
-            payload: this.gameState.pendingInteraction
-        });
+        this.sendPendingInteractionState();
 
         this.broadcastGameState();
 
@@ -2003,10 +2018,7 @@ class GameRoom {
 
         this.gameState.lastAction = { playerId: player.id, action: 'competition' };
 
-        this.broadcast({
-            type: 'PENDING_INTERACTION',
-            payload: this.gameState.pendingInteraction
-        });
+        this.sendPendingInteractionState();
 
         this.broadcastGameState();
 
@@ -2079,14 +2091,10 @@ const restoreRoomFromSnapshot = (snapshot) => {
     }
 
     let snapshotGeishaSet = DEFAULT_GEISHA_SET;
+    let resolvedBoard = null;
     try {
         snapshotGeishaSet = resolveRestorableGeishaSet(snapshot);
-        if (snapshot.baseGeishas) {
-            validateMatchBoardForSet(snapshotGeishaSet, snapshot.baseGeishas);
-        }
-        if (snapshot.gameState?.geishas) {
-            validateMatchBoardForSet(snapshotGeishaSet, snapshot.gameState.geishas);
-        }
+        resolvedBoard = resolveRestorableBoardForSet(snapshot, snapshotGeishaSet);
     } catch (_error) {
         return { room: null, errorMessage: LEGACY_ROOM_SNAPSHOT_ERROR_MESSAGE };
     }
@@ -2097,7 +2105,7 @@ const restoreRoomFromSnapshot = (snapshot) => {
     room.npcId = snapshot.npcId ?? null;
     room.npcDifficulty = snapshot.npcDifficulty ?? null;
     room.createdAt = snapshot.createdAt ?? Date.now();
-    room.baseGeishas = snapshot.baseGeishas ?? snapshot.gameState?.geishas ?? null;
+    room.baseGeishas = resolvedBoard;
     room.gameState = snapshot.gameState ?? null;
 
     if (room.npcId) {
@@ -2419,121 +2427,6 @@ function createMaskedCard(prefix, index) {
 // 依指定長度建立遮蔽卡片陣列
 function createMaskedCards(count, prefix) {
     return Array.from({ length: count }, (_, index) => createMaskedCard(prefix, index));
-}
-
-// 複製藝妓資料（避免意外修改原始物件）
-function cloneGeishas(geishas) {
-    return geishas.map((geisha) => ({ ...geisha }));
-}
-
-// 建立等待中的遊戲狀態（玩家尚未滿或尚未開始）
-function createWaitingGameState(gameId, playerIds, geishas, geishaSet = DEFAULT_GEISHA_SET, playerMetaMap = {}) {
-    const activeGeishaSet = normalizeGeishaSet(geishaSet);
-    if (!isSupportedGeishaSet(activeGeishaSet)) {
-        throw new Error(`Unsupported geisha set in waiting state: ${String(activeGeishaSet)}`);
-    }
-    return {
-        gameId,
-        hostId: null,
-        players: playerIds.map(id => createPlayer(id, playerMetaMap[id])),
-        geishas: cloneGeishas(geishas ?? createBaseGeishas(activeGeishaSet)),
-        geishaSet: activeGeishaSet,
-        currentPlayer: 0,
-        phase: 'waiting',
-        round: 1,
-        winner: null,
-        orderDecision: {
-            isOpen: false,
-            phase: 'deciding',
-            players: playerIds,
-            result: undefined,
-            confirmations: [],
-            waitingFor: playerIds,
-            currentPlayer: playerIds[0] ?? ''
-        },
-        drawPile: [],
-        discardPile: [],
-        removedCard: null,
-        pendingInteraction: null,
-        lastAction: undefined
-    };
-}
-
-// 建立排序後的遊戲狀態（保留上一輪資料）
-function createGameStateWithOrder(gameId, orderedPlayerIds, geishas, existingState = null, playerMetaMap = {}) {
-    const previousState = existingState ?? {};
-    const activeGeishaSet = normalizeGeishaSet(previousState.geishaSet);
-    if (!isSupportedGeishaSet(activeGeishaSet)) {
-        throw new Error(`Unsupported geisha set in ordered state: ${String(activeGeishaSet)}`);
-    }
-    const baseGeishas = geishas ?? createBaseGeishas(activeGeishaSet);
-
-    const players = orderedPlayerIds.map(playerId => {
-        const existingPlayer = previousState.players?.find(player => player.id === playerId);
-        if (existingPlayer) {
-            return {
-                ...existingPlayer,
-                actionTokens: existingPlayer.actionTokens.map(token => ({ ...token, used: token.used ?? false }))
-            };
-        }
-
-        return createPlayer(playerId, playerMetaMap[playerId]);
-    });
-
-    return {
-        gameState: {
-            gameId,
-            hostId: previousState.hostId ?? null,
-            players,
-            geishas: cloneGeishas(baseGeishas),
-            geishaSet: activeGeishaSet,
-            currentPlayer: 0,
-            phase: 'playing',
-            round: previousState.round ?? 1,
-            winner: null,
-            orderDecision: {
-                isOpen: false,
-                phase: 'result',
-                players: orderedPlayerIds,
-                result: {
-                    firstPlayer: orderedPlayerIds[0],
-                    secondPlayer: orderedPlayerIds[1],
-                    order: orderedPlayerIds
-                },
-                confirmations: [...orderedPlayerIds],
-                waitingFor: []
-            },
-            drawPile: previousState.drawPile ?? [],
-            discardPile: previousState.discardPile ?? [],
-            removedCard: previousState.removedCard ?? null,
-            pendingInteraction: null,
-            lastAction: undefined
-        }
-    };
-}
-
-// 建立玩家初始資料結構
-function createPlayer(playerId, meta = {}) {
-    return {
-        id: playerId,
-        name: meta.name ?? playerId,
-        lineUserId: meta.lineUserId,
-        avatarUrl: meta.avatarUrl,
-        hand: [],
-        playedCards: [],
-        secretCards: [],
-        discardedCards: [],
-        actionTokens: [
-            { type: 'secret', used: false },
-            { type: 'trade-off', used: false },
-            { type: 'gift', used: false },
-            { type: 'competition', used: false }
-        ],
-        score: {
-            charm: 0,
-            tokens: 0
-        }
-    };
 }
 
 // 產生 6 碼房間代碼
