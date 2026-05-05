@@ -84,6 +84,63 @@ test('summarizeGameState emits redacted server state summary only', () => {
     });
 });
 
+test('summarizeWebSocketMessage reports account status without LINE profile details', () => {
+    const summary = summarizeWebSocketMessage({
+        type: 'ACCOUNT_SYNC_RESULT',
+        payload: {
+            status: 'bound',
+            profile: {
+                lineUserId: 'U1234567890',
+                displayName: '銀座玩家',
+                avatarUrl: 'https://example.test/avatar.png'
+            },
+            verifiedIdentity: {
+                lineUserId: 'U1234567890'
+            },
+            token: 'secret',
+            rawProfile: {
+                userId: 'U1234567890'
+            },
+            persistenceStatus: {
+                mode: 'durable',
+                message: 'Account profiles are persistent.'
+            }
+        }
+    });
+
+    assert.deepEqual(summary, {
+        type: 'ACCOUNT_SYNC_RESULT',
+        accountStatus: 'bound',
+        accountPersistenceMode: 'durable',
+        hasPayload: true
+    });
+    assert.equal(Object.prototype.hasOwnProperty.call(summary, 'lineUserId'), false);
+    assert.equal(Object.prototype.hasOwnProperty.call(summary, 'displayName'), false);
+    assert.equal(Object.prototype.hasOwnProperty.call(summary, 'token'), false);
+    assert.equal(Object.prototype.hasOwnProperty.call(summary, 'rawProfile'), false);
+});
+
+test('summarizeGameState reports account persistence only', () => {
+    const summary = summarizeGameState({
+        gameId: 'ROOM01',
+        phase: 'waiting',
+        players: [],
+        accountPersistenceStatus: {
+            mode: 'temporary',
+            message: 'Account profiles are temporary in this environment.',
+            redisUrl: 'redis://secret'
+        }
+    });
+
+    assert.deepEqual(summary, {
+        gameId: 'ROOM01',
+        phase: 'waiting',
+        playerCount: 0,
+        accountPersistenceMode: 'temporary',
+        hasPendingInteraction: false
+    });
+});
+
 test('backend diagnostics remain opt-in', async () => {
     const originalFlag = process.env.GAME_DIAGNOSTICS;
     const originalDebug = console.debug;

@@ -32,6 +32,7 @@ import {
     summarizeGameState,
     summarizeWebSocketMessage
 } from './utils/runtimeLogger.js';
+import { accountStore } from './utils/accountStore.js';
 
 // NPC 設定（難度與思考時間）
 const NPC_DIFFICULTY_LABEL = {
@@ -66,18 +67,23 @@ const normalizePlayerMeta = (playerId, payload = {}) => {
         ? payload.displayName.trim()
         : playerId;
 
-    const lineUserId = typeof payload.lineUserId === 'string' && payload.lineUserId.trim()
-        ? payload.lineUserId.trim()
+    const accountProfile = payload.accountProfile && typeof payload.accountProfile === 'object'
+        ? payload.accountProfile
+        : null;
+
+    const lineUserId = typeof accountProfile?.lineUserId === 'string' && accountProfile.lineUserId.trim()
+        ? accountProfile.lineUserId.trim()
         : undefined;
 
-    const avatarUrl = typeof payload.avatarUrl === 'string' && payload.avatarUrl.trim()
-        ? payload.avatarUrl.trim()
+    const avatarUrl = typeof accountProfile?.avatarUrl === 'string' && accountProfile.avatarUrl.trim()
+        ? accountProfile.avatarUrl.trim()
         : undefined;
 
     return {
         name: displayName,
         lineUserId,
-        avatarUrl
+        avatarUrl,
+        accountProfile: accountProfile ?? undefined
     };
 };
 
@@ -215,7 +221,8 @@ class GameRoom {
             isNpc: true,
             name: npcId,
             lineUserId: undefined,
-            avatarUrl: undefined
+            avatarUrl: undefined,
+            accountProfile: undefined
         });
         this.npcId = npcId;
         this.npcDifficulty = normalized;
@@ -502,6 +509,9 @@ class GameRoom {
             if (normalizedMeta.avatarUrl) {
                 existingPlayer.avatarUrl = normalizedMeta.avatarUrl;
             }
+            if (normalizedMeta.accountProfile) {
+                existingPlayer.accountProfile = normalizedMeta.accountProfile;
+            }
             backendLogger.info(`♻️ 玩家 ${playerId} 重新連線房間 ${this.roomId}`, {
                 roomId: this.roomId,
                 playerId
@@ -519,7 +529,8 @@ class GameRoom {
             ws,
             name: normalizedMeta.name,
             lineUserId: normalizedMeta.lineUserId,
-            avatarUrl: normalizedMeta.avatarUrl
+            avatarUrl: normalizedMeta.avatarUrl,
+            accountProfile: normalizedMeta.accountProfile
         });
         backendLogger.info(`✅ 玩家 ${playerId} 加入房間 ${this.roomId}`, {
             roomId: this.roomId,
@@ -1575,6 +1586,15 @@ class GameRoom {
         if (winner) {
             this.gameState.phase = 'ended';
             this.gameState.winner = winner;
+            void accountStore.recordMatchCompletion({
+                winner,
+                players: this.players
+            }).catch((error) => {
+                backendLogger.error('❌ Account counter update failed', {
+                    roomId: this.roomId,
+                    error: error instanceof Error ? error.message : 'unknown'
+                });
+            });
 
             this.broadcast({
                 type: 'GAME_ENDED',
@@ -2327,6 +2347,7 @@ wss.on('connection', (ws, req) => {
 
     let currentPlayerId = null;
     let currentRoomId = null;
+    let currentAccountProfile = null;
 
     // 監聽客戶端訊息
     ws.on('message', async (data) => {
@@ -2338,6 +2359,12 @@ wss.on('connection', (ws, req) => {
             });
 
             switch (message.type) {
+                case 'ACCOUNT_SYNC':
+                    await handleAccountSync(ws, message.payload);
+                    break;
+                case 'ACCOUNT_STATUS':
+                    await handleAccountStatus(ws);
+                    break;
                 case 'JOIN_ROOM':
                     await handleJoinRoom(ws, message.payload);
                     break;
@@ -2384,6 +2411,47 @@ wss.on('connection', (ws, req) => {
             playerId: currentPlayerId ?? undefined
         });
     });
+
+    async function handleAccountSync(ws, payload = {}) {
+        const syncResult = await accountStore.syncAccount(payload);
+        currentAccountProfile = syncResult.status === 'bound' ? syncResult.profile : null;
+
+        if (currentRoomId && currentPlayerId && currentAccountProfile) {
+            const room = gameRooms.get(currentRoomId);
+            const player = room?.players.find((item) => item.playerId === currentPlayerId);
+            if (player) {
+                player.accountProfile = currentAccountProfile;
+                player.lineUserId = currentAccountProfile.lineUserId;
+                player.avatarUrl = currentAccountProfile.avatarUrl;
+                if (room.gameState) {
+                    const statePlayer = room.gameState.players.find((item) => item.id === currentPlayerId);
+                    if (statePlayer) {
+                        statePlayer.lineUserId = currentAccountProfile.lineUserId;
+                        statePlayer.avatarUrl = currentAccountProfile.avatarUrl;
+                    }
+                    room.broadcastGameState();
+                }
+                room.persistRoomSnapshot();
+            }
+        }
+
+        ws.send(JSON.stringify({
+            type: 'ACCOUNT_SYNC_RESULT',
+            payload: syncResult
+        }));
+    }
+
+    async function handleAccountStatus(ws) {
+        const persistenceStatus = await accountStore.checkPersistenceStatus();
+        ws.send(JSON.stringify({
+            type: 'ACCOUNT_SYNC_RESULT',
+            payload: {
+                status: currentAccountProfile ? 'bound' : 'guest',
+                ...(currentAccountProfile ? { profile: currentAccountProfile } : {}),
+                persistenceStatus
+            }
+        }));
+    }
 
     // 建立房間流程（含基本參數驗證）
     async function handleCreateRoom(ws, payload) {
@@ -2442,7 +2510,10 @@ wss.on('connection', (ws, req) => {
             ? { characterIds: [...room.customSelection.characterIds] }
             : null;
 
-        room.addPlayer(currentPlayerId, ws, normalizePlayerMeta(currentPlayerId, payload));
+        room.addPlayer(currentPlayerId, ws, normalizePlayerMeta(currentPlayerId, {
+            ...payload,
+            accountProfile: currentAccountProfile
+        }));
 
         if (mode === 'npc') {
             room.addNpcPlayer(aiDifficulty);
@@ -2530,7 +2601,10 @@ wss.on('connection', (ws, req) => {
             }));
             return;
         }
-        const result = room.addPlayer(playerId, ws, normalizePlayerMeta(playerId, payload));
+        const result = room.addPlayer(playerId, ws, normalizePlayerMeta(playerId, {
+            ...payload,
+            accountProfile: currentAccountProfile
+        }));
 
         if (result === 'full') {
             ws.send(JSON.stringify({
