@@ -120,6 +120,46 @@ test('summarizeWebSocketMessage reports account status without LINE profile deta
     assert.equal(Object.prototype.hasOwnProperty.call(summary, 'rawProfile'), false);
 });
 
+test('summarizeWebSocketMessage reports achievement status without progress or account details', () => {
+    const summary = summarizeWebSocketMessage({
+        type: 'ACHIEVEMENT_STATUS_RESULT',
+        payload: {
+            status: 'available',
+            newUnlockCount: 2,
+            items: [
+                {
+                    achievementId: 'first_completed_match',
+                    title: '初次花見',
+                    currentValue: 1,
+                    target: 1,
+                    unlockedAt: '2026-05-05T12:00:00.000Z'
+                }
+            ],
+            profile: {
+                lineUserId: 'U1234567890'
+            },
+            hiddenCards: [{ id: 'hidden-card' }],
+            token: 'secret',
+            persistenceStatus: {
+                mode: 'durable',
+                message: 'Account profiles are persistent.'
+            }
+        }
+    });
+
+    assert.deepEqual(summary, {
+        type: 'ACHIEVEMENT_STATUS_RESULT',
+        accountPersistenceMode: 'durable',
+        achievementStatus: 'available',
+        achievementNewUnlockCount: 2,
+        hasPayload: true
+    });
+    assert.equal(Object.prototype.hasOwnProperty.call(summary, 'items'), false);
+    assert.equal(Object.prototype.hasOwnProperty.call(summary, 'lineUserId'), false);
+    assert.equal(Object.prototype.hasOwnProperty.call(summary, 'hiddenCards'), false);
+    assert.equal(Object.prototype.hasOwnProperty.call(summary, 'token'), false);
+});
+
 test('summarizeGameState reports account persistence only', () => {
     const summary = summarizeGameState({
         gameId: 'ROOM01',

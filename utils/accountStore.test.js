@@ -130,7 +130,8 @@ test('bound-account match completion updates minimal counters only', async () =>
 test('guest match completion does not update persistent account counters', async () => {
     const store = createAccountStore({ redisUrl: '' });
 
-    const updates = await store.recordMatchCompletion({
+    const result = await store.recordMatchCompletion({
+        completionId: 'guest:end',
         winner: 'guest',
         players: [
             { playerId: 'guest', name: 'Guest' },
@@ -138,14 +139,16 @@ test('guest match completion does not update persistent account counters', async
         ]
     });
 
-    assert.deepEqual(updates, []);
+    assert.deepEqual(result.accountProfiles, []);
+    assert.deepEqual(result.achievements.updates, []);
 });
 
 test('recordMatchCompletion updates bound players only and caps wins by games played', async () => {
     const store = createAccountStore({ redisUrl: '', now: fixedClock('2026-05-05T12:00:00.000Z') });
     const sync = await store.syncVerifiedAccount({ verifiedIdentity, profile });
 
-    const updates = await store.recordMatchCompletion({
+    const result = await store.recordMatchCompletion({
+        completionId: 'room-1:end',
         winner: 'host',
         players: [
             { playerId: 'host', accountProfile: sync.profile },
@@ -153,8 +156,99 @@ test('recordMatchCompletion updates bound players only and caps wins by games pl
         ]
     });
 
-    assert.equal(updates.length, 1);
-    assert.deepEqual(updates[0].counters, {
+    assert.equal(result.accountProfiles.length, 1);
+    assert.deepEqual(result.accountProfiles[0].counters, {
+        gamesPlayed: 1,
+        wins: 1,
+        lastPlayedAt: '2026-05-05T12:00:00.000Z'
+    });
+});
+
+test('recordMatchCompletion updates account counters and achievement progress from one completion', async () => {
+    const achievementCalls = [];
+    const achievementStore = {
+        recordMatchCompletion: async (event) => {
+            achievementCalls.push(event);
+            return {
+                status: 'available',
+                completionId: event.completionId,
+                updates: [
+                    {
+                        lineUserId: event.players[0].accountProfile.lineUserId,
+                        achievementId: 'first_completed_match',
+                        currentValue: 1
+                    }
+                ]
+            };
+        }
+    };
+    const store = createAccountStore({
+        redisUrl: '',
+        now: fixedClock('2026-05-05T12:00:00.000Z'),
+        achievementStore
+    });
+    const sync = await store.syncVerifiedAccount({ verifiedIdentity, profile });
+
+    const result = await store.recordMatchCompletion({
+        completionId: 'room-1:end',
+        winner: 'host',
+        players: [
+            { playerId: 'host', accountProfile: sync.profile }
+        ]
+    });
+
+    assert.equal(achievementCalls.length, 1);
+    assert.equal(achievementCalls[0].completionId, 'room-1:end');
+    assert.equal(achievementCalls[0].completedAt, '2026-05-05T12:00:00.000Z');
+    assert.equal(result.accountProfiles[0].counters.gamesPlayed, 1);
+    assert.equal(result.achievements.updates[0].achievementId, 'first_completed_match');
+});
+
+test('recordMatchCompletion ignores repeated completionId for account counters and achievements', async () => {
+    const achievementCalls = [];
+    const achievementStore = {
+        recordMatchCompletion: async (event) => {
+            achievementCalls.push(event);
+            return {
+                status: 'available',
+                completionId: event.completionId,
+                updates: [
+                    {
+                        lineUserId: event.players[0].accountProfile.lineUserId,
+                        achievementId: 'first_completed_match',
+                        currentValue: 1
+                    }
+                ]
+            };
+        }
+    };
+    const store = createAccountStore({
+        redisUrl: '',
+        now: fixedClock('2026-05-05T12:00:00.000Z'),
+        achievementStore
+    });
+    const sync = await store.syncVerifiedAccount({ verifiedIdentity, profile });
+
+    await store.recordMatchCompletion({
+        completionId: 'room-duplicate:end',
+        winner: 'host',
+        players: [
+            { playerId: 'host', accountProfile: sync.profile }
+        ]
+    });
+    const repeated = await store.recordMatchCompletion({
+        completionId: 'room-duplicate:end',
+        winner: 'host',
+        players: [
+            { playerId: 'host', accountProfile: sync.profile }
+        ]
+    });
+    const profileAfterRepeat = await store.getProfile(verifiedIdentity.lineUserId);
+
+    assert.equal(achievementCalls.length, 1);
+    assert.deepEqual(repeated.accountProfiles, []);
+    assert.deepEqual(repeated.achievements.updates, []);
+    assert.deepEqual(profileAfterRepeat.counters, {
         gamesPlayed: 1,
         wins: 1,
         lastPlayedAt: '2026-05-05T12:00:00.000Z'

@@ -1,8 +1,10 @@
 import { createClient } from 'redis';
 import { backendLogger } from './runtimeLogger.js';
+import { createAchievementStore } from './achievementStore.js';
 
 const REDIS_URL = process.env.REDIS_URL;
 const ACCOUNT_KEY_PREFIX = 'hanamikoji:account:line:';
+const ACCOUNT_COMPLETION_KEY_PREFIX = 'hanamikoji:account:completion:';
 const ACCOUNT_GUEST_NOTICE = '目前以訪客模式繼續，帳號進度暫時不會保存。';
 
 const sanitizeString = (value) => (
@@ -10,6 +12,7 @@ const sanitizeString = (value) => (
 );
 
 const buildAccountKey = (lineUserId) => `${ACCOUNT_KEY_PREFIX}${lineUserId}`;
+const buildAccountCompletionKey = (completionId) => `${ACCOUNT_COMPLETION_KEY_PREFIX}${completionId}`;
 
 const createDefaultCounters = () => ({
     gamesPlayed: 0,
@@ -79,9 +82,11 @@ export const buildPublicAccountProfile = (profile) => {
 export const createAccountStore = ({
     redisUrl = REDIS_URL,
     redisClient = null,
-    now = () => new Date()
+    now = () => new Date(),
+    achievementStore = null
 } = {}) => {
     const memoryProfiles = new Map();
+    const memoryProcessedCompletions = new Map();
     let client = redisClient;
     let storageFailure = null;
 
@@ -165,6 +170,13 @@ export const createAccountStore = ({
         return getPersistenceStatus();
     };
 
+    const activeAchievementStore = achievementStore ?? createAchievementStore({
+        redisUrl,
+        redisClient: client,
+        now,
+        getPersistenceStatus
+    });
+
     const readProfile = async (lineUserId) => {
         const key = buildAccountKey(lineUserId);
         const activeClient = await getClient();
@@ -193,6 +205,34 @@ export const createAccountStore = ({
             return;
         }
         memoryProfiles.set(profile.lineUserId, profile);
+    };
+
+    const readProcessedCompletion = async (completionId) => {
+        const activeClient = await getClient();
+        if (activeClient) {
+            try {
+                const raw = await activeClient.get(buildAccountCompletionKey(completionId));
+                return raw ? JSON.parse(raw) : null;
+            } catch (error) {
+                storageFailure = error;
+                throw error;
+            }
+        }
+        return memoryProcessedCompletions.get(completionId) ?? null;
+    };
+
+    const writeProcessedCompletion = async (record) => {
+        const activeClient = await getClient();
+        if (activeClient) {
+            try {
+                await activeClient.set(buildAccountCompletionKey(record.completionId), JSON.stringify(record));
+            } catch (error) {
+                storageFailure = error;
+                throw error;
+            }
+            return;
+        }
+        memoryProcessedCompletions.set(record.completionId, record);
     };
 
     const upsertProfile = async ({ verifiedIdentity, profile }) => {
@@ -295,9 +335,41 @@ export const createAccountStore = ({
         return buildPublicAccountProfile(nextProfile);
     };
 
-    const recordMatchCompletion = async ({ players = [], winner } = {}) => {
+    const recordMatchCompletion = async ({ completionId, players = [], winner } = {}) => {
         const completedAt = now().toISOString();
+        const normalizedCompletionId = sanitizeString(completionId);
+        if (!normalizedCompletionId) {
+            const achievementResult = await activeAchievementStore.recordMatchCompletion({
+                completionId: normalizedCompletionId,
+                completedAt,
+                winner,
+                players
+            });
+            return {
+                accountProfiles: [],
+                achievements: achievementResult
+            };
+        }
+
+        const existingCompletion = await readProcessedCompletion(normalizedCompletionId);
+        if (existingCompletion) {
+            const persistenceStatus = getPersistenceStatus();
+            const achievementStatus = persistenceStatus.mode === 'durable' && persistenceStatus.available === true
+                ? 'available'
+                : 'unavailable';
+            return {
+                accountProfiles: [],
+                achievements: {
+                    status: achievementStatus,
+                    updates: [],
+                    persistenceStatus,
+                    completionId: normalizedCompletionId
+                }
+            };
+        }
+
         const updates = [];
+        const affectedLineUserIds = [];
         for (const player of players) {
             const lineUserId = player?.accountProfile?.lineUserId;
             if (!lineUserId) {
@@ -310,9 +382,26 @@ export const createAccountStore = ({
             });
             if (updated) {
                 updates.push(updated);
+                affectedLineUserIds.push(updated.lineUserId);
             }
         }
-        return updates;
+        const achievementResult = await activeAchievementStore.recordMatchCompletion({
+            completionId: normalizedCompletionId,
+            completedAt,
+            winner,
+            players
+        });
+
+        await writeProcessedCompletion({
+            completionId: normalizedCompletionId,
+            processedAt: now().toISOString(),
+            affectedLineUserIds
+        });
+
+        return {
+            accountProfiles: updates,
+            achievements: achievementResult
+        };
     };
 
     return {
@@ -324,7 +413,9 @@ export const createAccountStore = ({
         getProfile: async (lineUserId) => buildPublicAccountProfile(await readProfile(lineUserId)),
         updateCountersForCompletedGame,
         recordMatchCompletion,
-        buildPublicAccountProfile
+        buildPublicAccountProfile,
+        getAchievementSummary: activeAchievementStore.getAchievementSummary,
+        acknowledgeNewUnlocks: activeAchievementStore.acknowledgeNewUnlocks
     };
 };
 

@@ -170,6 +170,8 @@ class GameRoom {
         this.rematchConfirmations = new Set();
         // 開局準備確認集合
         this.readyConfirmations = new Set();
+        this.matchCompletionCounter = 0;
+        this.currentCompletionId = null;
     }
 
     // 產出可儲存的房間快照（不含連線物件）
@@ -183,6 +185,8 @@ class GameRoom {
             npcId: this.npcId,
             npcDifficulty: this.npcDifficulty,
             createdAt: this.createdAt,
+            matchCompletionCounter: this.matchCompletionCounter,
+            currentCompletionId: this.currentCompletionId,
             baseGeishas: this.baseGeishas,
             gameState: this.gameState
         };
@@ -369,6 +373,7 @@ class GameRoom {
         this.clearNpcTimers();
         this.rematchConfirmations.clear();
         this.lastRoundStarterId = null;
+        this.currentCompletionId = null;
         if (!this.regenerateBaseGeishas()) {
             return;
         }
@@ -1586,7 +1591,12 @@ class GameRoom {
         if (winner) {
             this.gameState.phase = 'ended';
             this.gameState.winner = winner;
+            if (!this.currentCompletionId) {
+                this.matchCompletionCounter += 1;
+                this.currentCompletionId = `${this.roomId}:match-${this.matchCompletionCounter}:ended`;
+            }
             void accountStore.recordMatchCompletion({
+                completionId: this.currentCompletionId,
                 winner,
                 players: this.players
             }).catch((error) => {
@@ -2320,6 +2330,12 @@ const restoreRoomFromSnapshot = (snapshot) => {
     room.npcId = snapshot.npcId ?? null;
     room.npcDifficulty = snapshot.npcDifficulty ?? null;
     room.createdAt = snapshot.createdAt ?? Date.now();
+    room.matchCompletionCounter = Number.isSafeInteger(snapshot.matchCompletionCounter)
+        ? snapshot.matchCompletionCounter
+        : 0;
+    room.currentCompletionId = typeof snapshot.currentCompletionId === 'string'
+        ? snapshot.currentCompletionId
+        : null;
     room.baseGeishas = resolvedBoard;
     room.gameState = snapshot.gameState ?? null;
 
@@ -2364,6 +2380,12 @@ wss.on('connection', (ws, req) => {
                     break;
                 case 'ACCOUNT_STATUS':
                     await handleAccountStatus(ws);
+                    break;
+                case 'ACHIEVEMENT_STATUS':
+                    await handleAchievementStatus(ws);
+                    break;
+                case 'ACHIEVEMENT_ACK_NEW_UNLOCKS':
+                    await handleAchievementAckNewUnlocks(ws, message.payload);
                     break;
                 case 'JOIN_ROOM':
                     await handleJoinRoom(ws, message.payload);
@@ -2450,6 +2472,28 @@ wss.on('connection', (ws, req) => {
                 ...(currentAccountProfile ? { profile: currentAccountProfile } : {}),
                 persistenceStatus
             }
+        }));
+    }
+
+    async function handleAchievementStatus(ws) {
+        const summary = await accountStore.getAchievementSummary(currentAccountProfile?.lineUserId);
+        ws.send(JSON.stringify({
+            type: 'ACHIEVEMENT_STATUS_RESULT',
+            payload: summary
+        }));
+    }
+
+    async function handleAchievementAckNewUnlocks(ws, payload = {}) {
+        const achievementIds = Array.isArray(payload?.achievementIds)
+            ? payload.achievementIds
+            : [];
+        const summary = await accountStore.acknowledgeNewUnlocks(
+            currentAccountProfile?.lineUserId,
+            achievementIds
+        );
+        ws.send(JSON.stringify({
+            type: 'ACHIEVEMENT_STATUS_RESULT',
+            payload: summary
         }));
     }
 
