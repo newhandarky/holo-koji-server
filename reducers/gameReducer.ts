@@ -2,6 +2,7 @@
 import { GameState, GameAction, Geisha } from "game-shared-types"
 // TS 對 .js 的 re-export 沒有型別資訊，因此 IDE 會判定沒有 export
 import { createRandomizedGeishas } from '../utils/gameUtils';
+import { backendLogger } from '../utils/runtimeLogger.js';
 
 // 初始藝妓資料（隨機順序）
 const initialGeishas: Geisha[] = createRandomizedGeishas();
@@ -29,17 +30,14 @@ export const initialState: GameState = {
 
 // 遊戲狀態 reducer（僅供部分後端模組使用）
 export const gameReducer = (state: GameState, action: GameAction): GameState => {
-    console.log('🔄 [Reducer] ===== 收到動作 =====');
-    console.log('🔄 [Reducer] 動作類型:', action.type);
-    console.log('🔄 [Reducer] 動作內容:', action);
-    console.log('🔄 [Reducer] 當前狀態:', state);
+    backendLogger.diagnostic('🐞 [Reducer] 收到動作摘要', {
+        gameId: state.gameId || undefined,
+        actionType: action.type,
+        playerCount: state.players.length
+    });
 
     switch (action.type) {
         case 'INIT_GAME':
-            console.log('🚨 [Reducer] ===== 處理 INIT_GAME =====');
-            console.log('🚨 [Reducer] payload.gameId:', action.payload.gameId);
-            console.log('🚨 [Reducer] payload.players:', action.payload.players);
-
             const newState = {
                 ...state,
                 gameId: action.payload.gameId,
@@ -49,16 +47,10 @@ export const gameReducer = (state: GameState, action: GameAction): GameState => 
                     'waiting' as const
             };
 
-            console.log('✅ [Reducer] INIT_GAME 處理完成');
-            console.log('✅ [Reducer] 新狀態 gameId:', newState.gameId);
-            console.log('✅ [Reducer] 新狀態 players:', newState.players);
-            console.log('✅ [Reducer] 新狀態 phase:', newState.phase);
-
             return newState;
 
         // 新增：開始順序決定
         case 'START_ORDER_DECISION':
-            console.log('🎲 [Reducer] ===== 處理 START_ORDER_DECISION =====');
             return {
                 ...state,
                 phase: 'deciding_order',
@@ -76,7 +68,6 @@ export const gameReducer = (state: GameState, action: GameAction): GameState => 
 
         // 新增：順序決定結果
         case 'ORDER_DECISION_RESULT':
-            console.log('🎯 [Reducer] ===== 處理 ORDER_DECISION_RESULT =====');
             return {
                 ...state,
                 orderDecision: {
@@ -89,7 +80,6 @@ export const gameReducer = (state: GameState, action: GameAction): GameState => 
 
         // 新增：更新確認狀態
         case 'UPDATE_ORDER_CONFIRMATIONS':
-            console.log('✅ [Reducer] ===== 處理 UPDATE_ORDER_CONFIRMATIONS =====');
             const updatedOrderDecision = {
                 ...state,
                 orderDecision: {
@@ -114,21 +104,18 @@ export const gameReducer = (state: GameState, action: GameAction): GameState => 
             return updatedOrderDecision;
 
         case 'PLAY_ACTION':
-            console.log('🎯 [Reducer] ===== 處理 PLAY_ACTION =====');
             return {
                 ...state,
                 // 這裡可以添加具體的遊戲動作處理邏輯
             };
 
         case 'END_TURN':
-            console.log('⏭️ [Reducer] ===== 處理 END_TURN =====');
             return {
                 ...state,
                 currentPlayer: (state.currentPlayer + 1) % state.players.length
             };
 
         case 'END_GAME':
-            console.log('🏆 [Reducer] ===== 處理 END_GAME =====');
             return {
                 ...state,
                 phase: 'ended',
@@ -136,7 +123,10 @@ export const gameReducer = (state: GameState, action: GameAction): GameState => 
             };
 
         default:
-            console.warn('⚠️ [Reducer] 未知動作類型:', action);
+            backendLogger.warn('⚠️ [Reducer] 未知動作類型', {
+                gameId: state.gameId || undefined,
+                actionType: action.type
+            });
             return state;
     }
 };

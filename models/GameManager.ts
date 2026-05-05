@@ -2,6 +2,7 @@
 import { GameState, GameAction, Player } from "game-shared-types";
 import { gameReducer, initialState } from '../reducers/gameReducer';
 import { createRandomizedGeishas } from '../utils/gameUtils';
+import { backendLogger } from '../utils/runtimeLogger.js';
 
 class GameManager {
     // 遊戲房間資料表（gameId → GameState）
@@ -17,7 +18,7 @@ class GameManager {
         };
 
         this.games.set(gameId, gameState);
-        console.log(`🎮 遊戲房間已建立: ${gameId}`);
+        backendLogger.diagnostic('🐞 [GameManager] 建立遊戲房間摘要', { gameId });
         return gameState;
     }
 
@@ -50,7 +51,10 @@ class GameManager {
         const newState = gameReducer(game, action);
         this.games.set(gameId, newState);
 
-        console.log(`🎯 遊戲動作執行: ${action.type} in ${gameId}`);
+        backendLogger.diagnostic('🐞 [GameManager] 執行遊戲動作摘要', {
+            gameId,
+            actionType: action.type
+        });
         return newState;
     }
 

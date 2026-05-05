@@ -24,6 +24,11 @@ import {
     loadRoomSnapshot,
     saveRoomSnapshot
 } from './utils/roomStore.js';
+import {
+    backendLogger,
+    summarizeGameState,
+    summarizeWebSocketMessage
+} from './utils/runtimeLogger.js';
 
 // NPC 設定（難度與思考時間）
 const NPC_DIFFICULTY_LABEL = {
@@ -206,7 +211,11 @@ class GameRoom {
         this.npcId = npcId;
         this.npcDifficulty = normalized;
 
-        console.log(`🤖 NPC 玩家加入房間 ${this.roomId}，難度：${label}`);
+        backendLogger.info(`🤖 NPC 玩家加入房間 ${this.roomId}`, {
+            roomId: this.roomId,
+            npcId,
+            difficulty: normalized
+        });
         return npcId;
     }
 
@@ -238,7 +247,10 @@ class GameRoom {
             this.baseGeishas = createRandomizedGeishas(this.geishaSet ?? DEFAULT_GEISHA_SET);
             return true;
         } catch (error) {
-            console.error(`❌ 房間 ${this.roomId} 建立藝妓資料失敗:`, error);
+            backendLogger.error(`❌ 房間 ${this.roomId} 建立藝妓資料失敗`, {
+                roomId: this.roomId,
+                error: error instanceof Error ? error.message : 'unknown'
+            });
             this.players.forEach((player) => {
                 this.sendError(player.playerId, GEISHA_SET_CONFIG_ERROR_MESSAGE);
             });
@@ -329,7 +341,10 @@ class GameRoom {
 
     // 重新開始對戰（保留同房間與玩家）
     startRematch() {
-        console.log(`🔁 房間 ${this.roomId} 重新開始對戰`);
+        backendLogger.info(`🔁 房間 ${this.roomId} 重新開始對戰`, {
+            roomId: this.roomId,
+            geishaSet: this.geishaSet
+        });
 
         this.clearNpcTimers();
         this.rematchConfirmations.clear();
@@ -350,19 +365,36 @@ class GameRoom {
     sendToPlayer(playerId, message) {
         const target = this.players.find(player => player.playerId === playerId);
         if (!target) {
-            console.warn(`⚠️ 找不到玩家 ${playerId}，無法傳送訊息`);
+            backendLogger.warn(`⚠️ 找不到玩家 ${playerId}，無法傳送訊息`, {
+                roomId: this.roomId,
+                playerId
+            });
             return;
         }
 
         if (target.ws.readyState !== 1) {
-            console.warn(`⚠️ 玩家 ${playerId} 連線狀態異常: ${target.ws.readyState}`);
+            backendLogger.warn(`⚠️ 玩家 ${playerId} 連線狀態異常`, {
+                roomId: this.roomId,
+                playerId,
+                readyState: target.ws.readyState
+            });
             return;
         }
 
         try {
             target.ws.send(JSON.stringify(message));
+            backendLogger.diagnostic('🐞 [Server] 傳送訊息摘要', {
+                roomId: this.roomId,
+                targetPlayerId: playerId,
+                ...summarizeWebSocketMessage(message)
+            });
         } catch (error) {
-            console.error(`❌ 傳送訊息給玩家 ${playerId} 失敗:`, error);
+            backendLogger.error(`❌ 傳送訊息給玩家 ${playerId} 失敗`, {
+                roomId: this.roomId,
+                playerId,
+                type: typeof message?.type === 'string' ? message.type : 'unknown',
+                error: error instanceof Error ? error.message : 'unknown'
+            });
         }
     }
 
@@ -437,7 +469,9 @@ class GameRoom {
     addPlayer(playerId, ws, meta = {}) {
         // 基本檢查：避免空白 playerId
         if (!playerId) {
-            console.warn('⚠️ 嘗試加入房間但 playerId 為空');
+            backendLogger.warn('⚠️ 嘗試加入房間但 playerId 為空', {
+                roomId: this.roomId
+            });
             return 'invalid';
         }
 
@@ -455,7 +489,10 @@ class GameRoom {
             if (normalizedMeta.avatarUrl) {
                 existingPlayer.avatarUrl = normalizedMeta.avatarUrl;
             }
-            console.log(`♻️ 玩家 ${playerId} 重新連線房間 ${this.roomId}`);
+            backendLogger.info(`♻️ 玩家 ${playerId} 重新連線房間 ${this.roomId}`, {
+                roomId: this.roomId,
+                playerId
+            });
             this.persistRoomSnapshot();
             return 'existing';
         }
@@ -471,7 +508,11 @@ class GameRoom {
             lineUserId: normalizedMeta.lineUserId,
             avatarUrl: normalizedMeta.avatarUrl
         });
-        console.log(`✅ 玩家 ${playerId} 加入房間 ${this.roomId}，當前玩家數：${this.players.length}`);
+        backendLogger.info(`✅ 玩家 ${playerId} 加入房間 ${this.roomId}`, {
+            roomId: this.roomId,
+            playerId,
+            playerCount: this.players.length
+        });
         this.persistRoomSnapshot();
         return 'added';
     }
@@ -479,32 +520,48 @@ class GameRoom {
     // 從房間移除玩家
     removePlayer(playerId) {
         this.players = this.players.filter(p => p.playerId !== playerId);
-        console.log(`❌ 玩家 ${playerId} 離開房間 ${this.roomId}，當前玩家數：${this.players.length}`);
+        backendLogger.info(`❌ 玩家 ${playerId} 離開房間 ${this.roomId}`, {
+            roomId: this.roomId,
+            playerId,
+            playerCount: this.players.length
+        });
         this.persistRoomSnapshot();
     }
 
     // 廣播訊息給房間內所有玩家（非狀態同步使用）
     broadcast(message, excludePlayerId = null) {
-        console.log(`📢 房間 ${this.roomId} 廣播訊息給 ${this.players.length} 個玩家:`, message.type);
-
         let successCount = 0;
         this.players.forEach((player, index) => {
             if (player.playerId !== excludePlayerId) {
                 if (player.ws.readyState === 1) {
                     try {
                         player.ws.send(JSON.stringify(message));
-                        console.log(`  ✅ 成功發送給玩家 ${player.playerId} (${index + 1}/${this.players.length})`);
                         successCount++;
                     } catch (error) {
-                        console.error(`  ❌ 發送失敗給玩家 ${player.playerId}:`, error);
+                        backendLogger.error(`❌ 房間 ${this.roomId} 廣播失敗`, {
+                            roomId: this.roomId,
+                            playerId: player.playerId,
+                            type: typeof message?.type === 'string' ? message.type : 'unknown',
+                            error: error instanceof Error ? error.message : 'unknown'
+                        });
                     }
                 } else {
-                    console.warn(`  ⚠️ 玩家 ${player.playerId} 連線狀態異常: ${player.ws.readyState}`);
+                    backendLogger.warn(`⚠️ 房間 ${this.roomId} 廣播時玩家連線狀態異常`, {
+                        roomId: this.roomId,
+                        playerId: player.playerId,
+                        readyState: player.ws.readyState
+                    });
                 }
             }
         });
 
-        console.log(`📢 廣播完成，成功發送給 ${successCount} 個玩家`);
+        backendLogger.diagnostic('🐞 [Server] 廣播訊息摘要', {
+            roomId: this.roomId,
+            successCount,
+            playerCount: this.players.length,
+            excludedPlayerId: excludePlayerId ?? undefined,
+            ...summarizeWebSocketMessage(message)
+        });
     }
 
     // 檢查房間是否已滿員
@@ -517,7 +574,10 @@ class GameRoom {
         const playerIds = orderedPlayerIds ?? this.players.map(p => p.playerId);
 
         if (playerIds.length < 2) {
-            console.warn(`⚠️ 房間 ${this.roomId} 嘗試準備回合，但玩家不足`);
+            backendLogger.warn(`⚠️ 房間 ${this.roomId} 嘗試準備回合，但玩家不足`, {
+                roomId: this.roomId,
+                playerCount: playerIds.length
+            });
             return;
         }
 
@@ -538,7 +598,10 @@ class GameRoom {
             playerIds.forEach((playerId, index) => {
                 const dealtCard = dealingDeck.shift();
                 if (!dealtCard) {
-                    console.error(`❌ 房間 ${this.roomId} 發牌時牌庫不足`);
+                    backendLogger.error(`❌ 房間 ${this.roomId} 發牌時牌庫不足`, {
+                        roomId: this.roomId,
+                        remainingDeckSize: dealingDeck.length
+                    });
                     return;
                 }
 
@@ -585,7 +648,11 @@ class GameRoom {
             lastAction: undefined
         };
 
-        console.log(`🃏 房間 ${this.roomId} 已準備新回合，發牌序列長度: ${this.dealSequence.length}`);
+        backendLogger.info(`🃏 房間 ${this.roomId} 已準備新回合`, {
+            roomId: this.roomId,
+            dealSequenceLength: this.dealSequence.length,
+            ...summarizeGameState(this.gameState)
+        });
 
         // 回合初始化檢查（避免發牌數量或重複卡異常）
         this.validateRoundSetup();
@@ -593,7 +660,9 @@ class GameRoom {
 
     // 開始隨機決定順序
     startOrderDecision() {
-        console.log(`🎲 房間 ${this.roomId} 開始隨機決定玩家順序`);
+        backendLogger.info(`🎲 房間 ${this.roomId} 開始隨機決定玩家順序`, {
+            roomId: this.roomId
+        });
 
         this.prepareRoundState({ openOrderDecision: true });
         this.orderDecisionState.isDeciding = true;
@@ -632,7 +701,11 @@ class GameRoom {
             order: [firstPlayer, secondPlayer]
         };
 
-        console.log(`🎲 房間 ${this.roomId} 順序決定結果:`, this.orderDecisionState.result);
+        backendLogger.info(`🎲 房間 ${this.roomId} 順序決定完成`, {
+            roomId: this.roomId,
+            firstPlayer: firstPlayer,
+            secondPlayer: secondPlayer
+        });
 
         if (this.gameState) {
             const order = this.orderDecisionState.result.order;
@@ -677,13 +750,20 @@ class GameRoom {
         }
 
         if (!this.orderDecisionState.result) {
-            console.warn(`⚠️ 玩家 ${playerId} 嘗試確認，但順序尚未決定`);
+            backendLogger.warn(`⚠️ 玩家 ${playerId} 嘗試確認，但順序尚未決定`, {
+                roomId: this.roomId,
+                playerId
+            });
             this.sendError(playerId, '順序尚未決定，請稍後再確認');
             return;
         }
 
         this.orderDecisionState.confirmations.add(playerId);
-        console.log(`✅ 玩家 ${playerId} 已確認順序，目前確認數: ${this.orderDecisionState.confirmations.size}/2`);
+        backendLogger.info(`✅ 玩家 ${playerId} 已確認順序`, {
+            roomId: this.roomId,
+            playerId,
+            confirmations: this.orderDecisionState.confirmations.size
+        });
 
         if (this.gameState) {
             this.gameState.orderDecision = {
@@ -734,7 +814,12 @@ class GameRoom {
         this.gameState = gameState;
         this.lastRoundStarterId = order[0];
 
-        console.log(`🚀 遊戲開始，房間 ${this.roomId}，順序：`, order);
+        backendLogger.info(`🚀 遊戲開始`, {
+            roomId: this.roomId,
+            geishaSet: this.geishaSet,
+            firstPlayer: order[0],
+            secondPlayer: order[1]
+        });
 
         // 廣播遊戲開始事件（含可見狀態）
         this.broadcastGameStateEvent('GAME_STARTED');
@@ -840,12 +925,17 @@ class GameRoom {
         const currentPlayer = this.gameState.players[this.gameState.currentPlayer];
 
         if (!currentPlayer) {
-            console.warn(`⚠️ 房間 ${this.roomId} 找不到當前玩家資料`);
+            backendLogger.warn(`⚠️ 房間 ${this.roomId} 找不到當前玩家資料`, {
+                roomId: this.roomId
+            });
             return;
         }
 
         if (currentPlayer.actionTokens.every(token => token.used)) {
-            console.log(`🔄 玩家 ${currentPlayer.id} 已無可用行動，跳到下一位`);
+            backendLogger.info(`🔄 玩家 ${currentPlayer.id} 已無可用行動，跳到下一位`, {
+                roomId: this.roomId,
+                playerId: currentPlayer.id
+            });
             this.endTurn();
             return;
         }
@@ -1398,7 +1488,9 @@ class GameRoom {
 
         const availablePlayerIndex = this.gameState.players.findIndex(player => player.actionTokens.some(token => !token.used));
         if (availablePlayerIndex === -1) {
-            console.log(`🧮 房間 ${this.roomId} 所有玩家行動結束，進入結算階段`);
+            backendLogger.info(`🧮 房間 ${this.roomId} 所有玩家行動結束，進入結算階段`, {
+                roomId: this.roomId
+            });
             this.resolveRound();
             return;
         }
@@ -1418,7 +1510,9 @@ class GameRoom {
             attempts += 1;
         }
 
-        console.log(`🧮 房間 ${this.roomId} 行動結束（未找到下一位玩家），進入結算`);
+        backendLogger.info(`🧮 房間 ${this.roomId} 行動結束（未找到下一位玩家），進入結算`, {
+            roomId: this.roomId
+        });
         this.gameState.phase = 'resolution';
         this.broadcastGameState();
     }
@@ -1502,16 +1596,26 @@ class GameRoom {
 
         // 規則：21 張牌中移除 1 張，剩 20 張進行發牌與牌堆
         if (totalCardsInGame !== 21) {
-            console.warn(`⚠️ 房間 ${this.roomId} 牌數異常，總數=${totalCardsInGame}（預期 21）`);
+            backendLogger.warn(`⚠️ 房間 ${this.roomId} 牌數異常`, {
+                roomId: this.roomId,
+                totalCardsInGame,
+                expectedCards: 21
+            });
         }
 
         if (totalPlayers === 2) {
             if (handSizes.some(size => size !== 6)) {
-                console.warn(`⚠️ 房間 ${this.roomId} 手牌數量異常: ${handSizes.join(', ')}`);
+                backendLogger.warn(`⚠️ 房間 ${this.roomId} 手牌數量異常`, {
+                    roomId: this.roomId,
+                    handSizes: handSizes.join(',')
+                });
             }
 
             if (this.gameState.drawPile.length !== 8) {
-                console.warn(`⚠️ 房間 ${this.roomId} 牌堆數量異常: ${this.gameState.drawPile.length}`);
+                backendLogger.warn(`⚠️ 房間 ${this.roomId} 牌堆數量異常`, {
+                    roomId: this.roomId,
+                    drawPileSize: this.gameState.drawPile.length
+                });
             }
         }
 
@@ -1533,7 +1637,9 @@ class GameRoom {
         }
 
         if (hasDuplicate) {
-            console.warn(`⚠️ 房間 ${this.roomId} 發現重複卡片 ID，請檢查洗牌與發牌流程`);
+            backendLogger.warn(`⚠️ 房間 ${this.roomId} 發現重複卡片 ID，請檢查洗牌與發牌流程`, {
+                roomId: this.roomId
+            });
         }
     }
 
@@ -1603,7 +1709,10 @@ class GameRoom {
 
         const nextOrder = this.getNextRoundOrder();
         if (nextOrder.length < 2) {
-            console.warn(`⚠️ 房間 ${this.roomId} 無法開始下一輪（玩家不足）`);
+            backendLogger.warn(`⚠️ 房間 ${this.roomId} 無法開始下一輪（玩家不足）`, {
+                roomId: this.roomId,
+                playerCount: nextOrder.length
+            });
             return;
         }
 
@@ -1707,7 +1816,10 @@ class GameRoom {
     // 處理玩家送出的行動（入口）
     handleAction(playerId, action) {
         if (!this.gameState) {
-            console.warn(`⚠️ 房間 ${this.roomId} 尚未建立遊戲狀態，無法處理行動`);
+            backendLogger.warn(`⚠️ 房間 ${this.roomId} 尚未建立遊戲狀態，無法處理行動`, {
+                roomId: this.roomId,
+                playerId
+            });
             this.sendError(playerId, '遊戲尚未準備完成');
             return;
         }
@@ -1718,7 +1830,11 @@ class GameRoom {
 
         const player = this.getPlayerState(playerId);
         if (!player) {
-            console.warn(`⚠️ 找不到玩家 ${playerId}，忽略行動 ${action?.type}`);
+            backendLogger.warn(`⚠️ 找不到玩家 ${playerId}，忽略行動`, {
+                roomId: this.roomId,
+                playerId,
+                actionType: action?.type
+            });
             this.sendError(playerId, '玩家資料不存在');
             return;
         }
@@ -1764,21 +1880,32 @@ class GameRoom {
                 this.handleResolveCompetition(playerId, action.payload?.chosenGroupIndex);
                 break;
             default:
-                console.warn(`⚠️ 未實作的行動類型: ${action.type}`);
+                backendLogger.warn('⚠️ 未實作的行動類型', {
+                    roomId: this.roomId,
+                    playerId,
+                    actionType: action.type
+                });
         }
     }
 
     // 執行密約行動（選 1 張卡蓋牌）
     handlePlaySecret(player, cardId) {
         if (!cardId) {
-            console.warn('⚠️ PLAY_SECRET 缺少 cardId');
+            backendLogger.warn('⚠️ PLAY_SECRET 缺少 cardId', {
+                roomId: this.roomId,
+                playerId: player.id
+            });
             this.sendError(player.id, '請選擇 1 張卡片作為密約');
             return;
         }
 
         const cardIndex = player.hand.findIndex(card => card.id === cardId);
         if (cardIndex === -1) {
-            console.warn(`⚠️ 玩家 ${player.id} 的手牌中找不到卡片 ${cardId}`);
+            backendLogger.warn(`⚠️ 玩家 ${player.id} 的手牌中找不到卡片`, {
+                roomId: this.roomId,
+                playerId: player.id,
+                cardId
+            });
             this.sendError(player.id, '卡片不在你的手牌中');
             return;
         }
@@ -1808,7 +1935,10 @@ class GameRoom {
     // 執行取捨行動（選 2 張卡丟棄）
     handleTradeOff(player, cardIds = []) {
         if (!Array.isArray(cardIds) || cardIds.length !== 2) {
-            console.warn('⚠️ PLAY_TRADE_OFF 需要 2 張卡片');
+            backendLogger.warn('⚠️ PLAY_TRADE_OFF 需要 2 張卡片', {
+                roomId: this.roomId,
+                playerId: player.id
+            });
             this.sendError(player.id, '取捨必須選擇 2 張卡片');
             return;
         }
@@ -1827,7 +1957,10 @@ class GameRoom {
         });
 
         if (collected.length !== 2) {
-            console.warn('⚠️ PLAY_TRADE_OFF 無法找到所有指定卡片');
+            backendLogger.warn('⚠️ PLAY_TRADE_OFF 無法找到所有指定卡片', {
+                roomId: this.roomId,
+                playerId: player.id
+            });
             player.hand.push(...collected); // 還原
             this.sendError(player.id, '取捨卡片驗證失敗');
             return;
@@ -1857,7 +1990,10 @@ class GameRoom {
     // 執行贈予行動（選 3 張卡給對手挑）
     handleInitiateGift(player, cardIds = []) {
         if (!Array.isArray(cardIds) || cardIds.length !== 3) {
-            console.warn('⚠️ INITIATE_GIFT 需要 3 張卡片');
+            backendLogger.warn('⚠️ INITIATE_GIFT 需要 3 張卡片', {
+                roomId: this.roomId,
+                playerId: player.id
+            });
             this.sendError(player.id, '贈予必須選擇 3 張卡片');
             return;
         }
@@ -1868,7 +2004,10 @@ class GameRoom {
 
         const opponentId = this.getOpponentId(player.id);
         if (!opponentId) {
-            console.warn('⚠️ 找不到對手，無法執行贈予');
+            backendLogger.warn('⚠️ 找不到對手，無法執行贈予', {
+                roomId: this.roomId,
+                playerId: player.id
+            });
             this.sendError(player.id, '目前沒有對手可進行贈予');
             return;
         }
@@ -1882,7 +2021,10 @@ class GameRoom {
         });
 
         if (offeredCards.length !== 3) {
-            console.warn('⚠️ INITIATE_GIFT 無法找到所有指定卡片');
+            backendLogger.warn('⚠️ INITIATE_GIFT 無法找到所有指定卡片', {
+                roomId: this.roomId,
+                playerId: player.id
+            });
             player.hand.push(...offeredCards);
             this.sendError(player.id, '贈予卡片驗證失敗');
             return;
@@ -1913,20 +2055,29 @@ class GameRoom {
         const pending = this.gameState?.pendingInteraction;
 
         if (!pending || pending.type !== 'GIFT_SELECTION') {
-            console.warn('⚠️ 當前沒有贈予互動等待處理');
+            backendLogger.warn('⚠️ 當前沒有贈予互動等待處理', {
+                roomId: this.roomId,
+                playerId
+            });
             this.sendError(playerId, '目前沒有等待處理的贈予');
             return;
         }
 
         if (pending.targetPlayerId !== playerId) {
-            console.warn('⚠️ 非目標玩家嘗試處理贈予');
+            backendLogger.warn('⚠️ 非目標玩家嘗試處理贈予', {
+                roomId: this.roomId,
+                playerId
+            });
             this.sendError(playerId, '你不是贈予的目標玩家');
             return;
         }
 
         const chosenCard = pending.offeredCards.find(card => card.id === chosenCardId);
         if (!chosenCard) {
-            console.warn('⚠️ RESOLVE_GIFT 選擇的卡片不存在');
+            backendLogger.warn('⚠️ RESOLVE_GIFT 選擇的卡片不存在', {
+                roomId: this.roomId,
+                playerId
+            });
             this.sendError(playerId, '選擇的卡片不存在');
             return;
         }
@@ -1935,7 +2086,10 @@ class GameRoom {
         const receiver = this.getPlayerState(playerId);
 
         if (!opponent || !receiver) {
-            console.warn('⚠️ 找不到贈予雙方玩家');
+            backendLogger.warn('⚠️ 找不到贈予雙方玩家', {
+                roomId: this.roomId,
+                playerId
+            });
             this.sendError(playerId, '找不到贈予對象');
             return;
         }
@@ -1965,14 +2119,20 @@ class GameRoom {
     // 執行競爭行動（選 4 張卡分 2 組）
     handleInitiateCompetition(player, groups = []) {
         if (!Array.isArray(groups) || groups.length !== 2 || groups.some(group => group.length !== 2)) {
-            console.warn('⚠️ INITIATE_COMPETITION 需要分成兩組且每組 2 張');
+            backendLogger.warn('⚠️ INITIATE_COMPETITION 需要分成兩組且每組 2 張', {
+                roomId: this.roomId,
+                playerId: player.id
+            });
             this.sendError(player.id, '競爭必須分成兩組，每組 2 張卡片');
             return;
         }
 
         const opponentId = this.getOpponentId(player.id);
         if (!opponentId) {
-            console.warn('⚠️ 找不到對手，無法進行競爭');
+            backendLogger.warn('⚠️ 找不到對手，無法進行競爭', {
+                roomId: this.roomId,
+                playerId: player.id
+            });
             this.sendError(player.id, '目前沒有對手可進行競爭');
             return;
         }
@@ -1992,7 +2152,10 @@ class GameRoom {
         });
 
         if (extractedCards.length !== 4) {
-            console.warn('⚠️ INITIATE_COMPETITION 無法找到所有指定卡片');
+            backendLogger.warn('⚠️ INITIATE_COMPETITION 無法找到所有指定卡片', {
+                roomId: this.roomId,
+                playerId: player.id
+            });
             player.hand.push(...extractedCards);
             this.sendError(player.id, '競爭卡片驗證失敗');
             return;
@@ -2002,7 +2165,10 @@ class GameRoom {
         const groupedCards = groups.map(group => group.map(cardId => extractedCards.find(card => card.id === cardId)).filter(Boolean));
 
         if (groupedCards.some(group => group.length !== 2)) {
-            console.warn('⚠️ INITIATE_COMPETITION 組別卡片無法匹配');
+            backendLogger.warn('⚠️ INITIATE_COMPETITION 組別卡片無法匹配', {
+                roomId: this.roomId,
+                playerId: player.id
+            });
             player.hand.push(...extractedCards);
             this.sendError(player.id, '競爭分組驗證失敗');
             return;
@@ -2033,20 +2199,29 @@ class GameRoom {
         const pending = this.gameState?.pendingInteraction;
 
         if (!pending || pending.type !== 'COMPETITION_SELECTION') {
-            console.warn('⚠️ 當前沒有競爭互動等待處理');
+            backendLogger.warn('⚠️ 當前沒有競爭互動等待處理', {
+                roomId: this.roomId,
+                playerId
+            });
             this.sendError(playerId, '目前沒有等待處理的競爭');
             return;
         }
 
         if (pending.targetPlayerId !== playerId) {
-            console.warn('⚠️ 非目標玩家嘗試處理競爭');
+            backendLogger.warn('⚠️ 非目標玩家嘗試處理競爭', {
+                roomId: this.roomId,
+                playerId
+            });
             this.sendError(playerId, '你不是競爭的目標玩家');
             return;
         }
 
         const selectedGroup = pending.groups[chosenGroupIndex];
         if (!selectedGroup) {
-            console.warn('⚠️ RESOLVE_COMPETITION 選擇的組別不存在');
+            backendLogger.warn('⚠️ RESOLVE_COMPETITION 選擇的組別不存在', {
+                roomId: this.roomId,
+                playerId
+            });
             this.sendError(playerId, '選擇的組別不存在');
             return;
         }
@@ -2058,7 +2233,10 @@ class GameRoom {
         const receiver = this.getPlayerState(playerId);
 
         if (!initiator || !receiver) {
-            console.warn('⚠️ 找不到競爭雙方玩家');
+            backendLogger.warn('⚠️ 找不到競爭雙方玩家', {
+                roomId: this.roomId,
+                playerId
+            });
             this.sendError(playerId, '找不到競爭對象');
             return;
         }
@@ -2126,7 +2304,9 @@ const restoreRoomFromSnapshot = (snapshot) => {
 // WebSocket 連線入口（處理玩家進出與訊息）
 wss.on('connection', (ws, req) => {
     const origin = req.headers.origin;
-    console.log('🔌 客戶端已連接，來源:', origin);
+    backendLogger.info('🔌 客戶端已連接', {
+        origin: typeof origin === 'string' ? origin : 'unknown'
+    });
 
     let currentPlayerId = null;
     let currentRoomId = null;
@@ -2135,7 +2315,10 @@ wss.on('connection', (ws, req) => {
     ws.on('message', async (data) => {
         try {
             const message = JSON.parse(data.toString());
-            console.log('📨 收到訊息:', message, '來源:', origin);
+            backendLogger.diagnostic('🐞 [Server] 收到訊息摘要', {
+                origin: typeof origin === 'string' ? origin : 'unknown',
+                ...summarizeWebSocketMessage(message)
+            });
 
             switch (message.type) {
                 case 'JOIN_ROOM':
@@ -2160,10 +2343,16 @@ wss.on('connection', (ws, req) => {
                     handleLeaveRoom(ws);
                     break;
                 default:
-                    console.warn('⚠️ 未知訊息類型:', message.type);
+                    backendLogger.warn('⚠️ 未知訊息類型', {
+                        type: typeof message?.type === 'string' ? message.type : 'unknown',
+                        origin: typeof origin === 'string' ? origin : 'unknown'
+                    });
             }
         } catch (error) {
-            console.error('❌ 訊息解析錯誤:', error);
+            backendLogger.error('❌ 訊息解析錯誤', {
+                origin: typeof origin === 'string' ? origin : 'unknown',
+                error: error instanceof Error ? error.message : 'unknown'
+            });
         }
     });
 
@@ -2172,7 +2361,11 @@ wss.on('connection', (ws, req) => {
         if (currentRoomId && currentPlayerId) {
             handleLeaveRoom(ws);
         }
-        console.log('🔌 客戶端已斷線，來源:', origin);
+        backendLogger.info('🔌 客戶端已斷線', {
+            origin: typeof origin === 'string' ? origin : 'unknown',
+            roomId: currentRoomId ?? undefined,
+            playerId: currentPlayerId ?? undefined
+        });
     });
 
     // 建立房間流程（含基本參數驗證）
@@ -2221,7 +2414,13 @@ wss.on('connection', (ws, req) => {
             room.addNpcPlayer(aiDifficulty);
         }
 
-        console.log(`🏠 房間 ${roomId} 已建立，創建者：${currentPlayerId}，來源：${origin}`);
+        backendLogger.info(`🏠 房間 ${roomId} 已建立`, {
+            roomId,
+            playerId: currentPlayerId,
+            mode,
+            geishaSet: requestedGeishaSet,
+            origin: typeof origin === 'string' ? origin : 'unknown'
+        });
 
         ws.send(JSON.stringify({
             type: 'ROOM_CREATED',
@@ -2243,7 +2442,9 @@ wss.on('connection', (ws, req) => {
         room.persistRoomSnapshot();
 
         if (room.players.length === room.maxPlayers) {
-            console.log(`🎮 房間 ${roomId} 已滿，開始隨機決定順序`);
+            backendLogger.info(`🎮 房間 ${roomId} 已滿，開始隨機決定順序`, {
+                roomId
+            });
             setTimeout(() => {
                 room.startOrderDecision();
             }, 800);
@@ -2308,7 +2509,10 @@ wss.on('connection', (ws, req) => {
         currentRoomId = roomId;
 
         if (result === 'existing') {
-            console.log(`♻️ 玩家 ${playerId} 已在房間 ${roomId}，同步當前狀態`);
+            backendLogger.info(`♻️ 玩家 ${playerId} 已在房間 ${roomId}，同步當前狀態`, {
+                roomId,
+                playerId
+            });
             if (room.gameState) {
                 const payloadState = room.buildClientGameState(playerId);
                 ws.send(JSON.stringify({
@@ -2319,7 +2523,12 @@ wss.on('connection', (ws, req) => {
             return;
         }
 
-        console.log(`👤 玩家 ${playerId} 加入房間 ${roomId}，來源：${origin}`);
+        backendLogger.info(`👤 玩家 ${playerId} 加入房間 ${roomId}`, {
+            roomId,
+            playerId,
+            geishaSet: room.geishaSet,
+            origin: typeof origin === 'string' ? origin : 'unknown'
+        });
 
         ws.send(JSON.stringify({
             type: 'PLAYER_JOINED',
@@ -2341,7 +2550,9 @@ wss.on('connection', (ws, req) => {
         room.persistRoomSnapshot();
 
         if (room.players.length === room.maxPlayers) {
-            console.log(`🎮 房間 ${roomId} 已滿，開始隨機決定順序`);
+            backendLogger.info(`🎮 房間 ${roomId} 已滿，開始隨機決定順序`, {
+                roomId
+            });
             setTimeout(() => {
                 room.startOrderDecision();
             }, 1000);
@@ -2365,7 +2576,10 @@ wss.on('connection', (ws, req) => {
         }
 
         if (!payload || !payload.action || !payload.action.type) {
-            console.warn('⚠️ GAME_ACTION 缺少 action 內容');
+            backendLogger.warn('⚠️ GAME_ACTION 缺少 action 內容', {
+                roomId: currentRoomId ?? undefined,
+                playerId: currentPlayerId ?? undefined
+            });
             room.sendError(currentPlayerId, '缺少行動內容');
             return;
         }
@@ -2408,7 +2622,9 @@ wss.on('connection', (ws, req) => {
                 if (room.players.length === 0 || hasOnlyNpc) {
                     gameRooms.delete(currentRoomId);
                     void deleteRoomSnapshot(currentRoomId);
-                    console.log(`🗑️ 房間 ${currentRoomId} 已刪除`);
+                    backendLogger.info(`🗑️ 房間 ${currentRoomId} 已刪除`, {
+                        roomId: currentRoomId
+                    });
                 }
             }
         }
@@ -2437,14 +2653,8 @@ function generateRoomId() {
 const PORT = process.env.PORT || 3001;
 
 server.listen(PORT, '0.0.0.0', () => {
-    console.log(`🚀 伺服器運行在 port ${PORT}`);
-    console.log(`🌍 環境: ${process.env.NODE_ENV}`);
-    console.log(`⚡ WebSocket 伺服器已啟動`);
-    console.log(`📊 CORS 允許的域名:`, [
-        'http://localhost:3000',
-        'https://holo-koji-frontend.onrender.com',
-        'https://newhandarky.github.io',
-        'https://newhandarky.github.io/holo-koji',
-        'https://newhandarky.github.io/holo-koji/'
-    ]);
+    backendLogger.info('🚀 WebSocket 伺服器已啟動', {
+        port: Number(PORT),
+        environment: process.env.NODE_ENV ?? 'development'
+    });
 });
