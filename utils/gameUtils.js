@@ -377,6 +377,15 @@ export const resolveRestorableBoardForSet = (snapshot = {}, setKey = DEFAULT_GEI
 
     if (snapshot?.baseGeishas && snapshot?.gameState?.geishas) {
         validateMatchBoardForSet(setKey, snapshot.gameState.geishas);
+        const toBoardIdentity = (geishas) => [...geishas]
+            .sort((left, right) => left.boardSlotId - right.boardSlotId)
+            .map((geisha) => `${geisha.characterId}:${geisha.boardSlotId}`)
+            .join('|');
+        const baseIdentity = toBoardIdentity(snapshot.baseGeishas);
+        const stateIdentity = toBoardIdentity(snapshot.gameState.geishas);
+        if (baseIdentity !== stateIdentity) {
+            throw new Error(`Restored match board for ${normalizeGeishaSet(setKey)} must match the saved base board.`);
+        }
     }
 
     return resolvedBoard;
