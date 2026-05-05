@@ -23,14 +23,39 @@ test('summarizeWebSocketMessage keeps only event-level context', () => {
     assert.deepEqual(summary, {
         type: 'GAME_ACTION',
         roomId: 'ROOM01',
-        gameId: undefined,
         playerId: 'p1',
         actionType: 'INITIATE_COMPETITION',
-        mode: undefined,
-        geishaSet: undefined,
         hasPayload: true
     });
     assert.equal(Object.prototype.hasOwnProperty.call(summary, 'groups'), false);
+});
+
+test('summarizeWebSocketMessage includes setup mode without selected IDs', () => {
+    const summary = summarizeWebSocketMessage({
+        type: 'CREATE_ROOM',
+        payload: {
+            roomId: 'ROOM01',
+            playerId: 'p1',
+            mode: 'online',
+            geishaSet: 'hololive',
+            setupMode: 'custom',
+            customSelection: {
+                characterIds: ['hidden-for-log-safety']
+            }
+        }
+    });
+
+    assert.deepEqual(summary, {
+        type: 'CREATE_ROOM',
+        roomId: 'ROOM01',
+        playerId: 'p1',
+        mode: 'online',
+        geishaSet: 'hololive',
+        setupMode: 'custom',
+        hasPayload: true
+    });
+    assert.equal(Object.prototype.hasOwnProperty.call(summary, 'customSelection'), false);
+    assert.equal(Object.prototype.hasOwnProperty.call(summary, 'characterIds'), false);
 });
 
 test('summarizeGameState emits redacted server state summary only', () => {

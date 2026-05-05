@@ -2,6 +2,10 @@
  * @typedef {import('game-shared-types').Geisha} Geisha
  * @typedef {import('game-shared-types').ItemCard} ItemCard
  */
+import { createRequire } from 'node:module';
+
+const require = createRequire(import.meta.url);
+const { characterProfilesBySet } = require('../../game-shared-types/dist/index.js');
 
 const DEFAULT_WEB_APP_URL = 'https://newhandarky.github.io/holo-koji';
 const assetBaseUrl = (process.env.WEB_APP_URL || process.env.REACT_APP_WEB_APP_URL || DEFAULT_WEB_APP_URL).replace(/\/$/, '');
@@ -22,120 +26,14 @@ const resolveAssetUrl = (assetPath) => {
 export const charmPointsDistribution = [2, 2, 2, 3, 3, 4, 5];
 export const DEFAULT_GEISHA_SET = 'default';
 export const SUPPORTED_GEISHA_SETS = ['default', 'collaboration', 'hololive'];
+export const ROOM_SETUP_MODES = ['random', 'custom'];
+export const DEFAULT_ROOM_SETUP_MODE = 'random';
+export const CUSTOM_SELECTION_SIZE = 7;
 
-export const ginzaCharacterPool = [
-    {
-        characterId: 'ginza-ema',
-        name: 'エマ',
-        imageUrl: 'https://pub-0238f59b333e4bf38dac0e35da86c1a0.r2.dev/uploads/%E9%8A%80%E5%BA%A7/1777611017157-376855dd-16ba-4292-8d0c-2e79e278e241-kabuki03.png'
-    },
-    {
-        characterId: 'ginza-rio',
-        name: 'リオ',
-        imageUrl: 'https://pub-0238f59b333e4bf38dac0e35da86c1a0.r2.dev/uploads/%E9%8A%80%E5%BA%A7/1777611017083-2ee9140e-907f-45ff-8e78-acaf476fe4e3-kabuki05.png'
-    },
-    {
-        characterId: 'ginza-aya',
-        name: 'アヤ',
-        imageUrl: 'https://pub-0238f59b333e4bf38dac0e35da86c1a0.r2.dev/uploads/%E9%8A%80%E5%BA%A7/1777611017067-cdc6ebba-23b6-497b-a835-1dc221078c42-kabuki09.png'
-    },
-    {
-        characterId: 'ginza-noa',
-        name: 'ノア',
-        imageUrl: 'https://pub-0238f59b333e4bf38dac0e35da86c1a0.r2.dev/uploads/%E9%8A%80%E5%BA%A7/1777611016888-54e667d9-47fe-416c-8909-46b6a9ac2b83-kabuki01.png'
-    },
-    {
-        characterId: 'ginza-reina',
-        name: 'レイナ',
-        imageUrl: 'https://pub-0238f59b333e4bf38dac0e35da86c1a0.r2.dev/uploads/%E9%8A%80%E5%BA%A7/1777611017071-a06dabd4-643a-4f0c-a36c-ec9a22bde9e8-kabuki02.png'
-    },
-    {
-        characterId: 'ginza-misaki',
-        name: 'ミサキ',
-        imageUrl: 'https://pub-0238f59b333e4bf38dac0e35da86c1a0.r2.dev/uploads/%E9%8A%80%E5%BA%A7/1777611016880-7e3fe2d2-25c3-4552-89c6-d67a6d5c238e-kabuki06.png'
-    },
-    {
-        characterId: 'ginza-core',
-        name: 'コア',
-        imageUrl: 'https://pub-0238f59b333e4bf38dac0e35da86c1a0.r2.dev/uploads/%E9%8A%80%E5%BA%A7/1777611016892-c373732f-4f9b-4f79-b05d-ae92fec06aec-kabuki07.png'
-    }
-];
-
-export const collaborationCharacterPool = [
-    {
-        characterId: 'collaboration-luminous',
-        name: 'ルミナス',
-        imageUrl: 'https://pub-0238f59b333e4bf38dac0e35da86c1a0.r2.dev/uploads/collaboration/1777794154619-56c08d44-f761-4428-880a-cb06b18910cd-file_00000000c60c7206a4b1990a0851cb55.png'
-    },
-    {
-        characterId: 'collaboration-marin',
-        name: 'マリン',
-        imageUrl: 'https://pub-0238f59b333e4bf38dac0e35da86c1a0.r2.dev/uploads/collaboration/1777794154619-238b4ede-9ef9-4f61-950c-6c50403d8257-file_0000000058a07206a98b78b3d163bfcd.png'
-    },
-    {
-        characterId: 'collaboration-tifa',
-        name: 'ティファ',
-        imageUrl: 'https://pub-0238f59b333e4bf38dac0e35da86c1a0.r2.dev/uploads/collaboration/1777794154619-8ddec58e-ea92-4c9d-af97-19514673171b-file_000000002f187206886a7c5acecdee75.png'
-    },
-    {
-        characterId: 'collaboration-yoru',
-        name: 'ヨル',
-        imageUrl: 'https://pub-0238f59b333e4bf38dac0e35da86c1a0.r2.dev/uploads/collaboration/1777794154619-7f0123f1-c2be-4b50-869d-628bddbb482a-file_0000000051987206ab4b8bde70c394ef.png'
-    },
-    {
-        characterId: 'collaboration-frieren',
-        name: 'フリーレン',
-        imageUrl: 'https://pub-0238f59b333e4bf38dac0e35da86c1a0.r2.dev/uploads/collaboration/1777794154619-2fb6f6b3-ecab-4416-90ac-54f6588f2937-file_000000009c307206a4d10253a66bf32f.png'
-    },
-    {
-        characterId: 'collaboration-eren',
-        name: 'エレン',
-        imageUrl: 'https://pub-0238f59b333e4bf38dac0e35da86c1a0.r2.dev/uploads/collaboration/1777794154619-a3648bc0-6ec9-4117-880b-924f42d7c236-file_00000000c6247206a5742e41defbde0f.png'
-    },
-    {
-        characterId: 'collaboration-kana',
-        name: 'カナ',
-        imageUrl: 'https://pub-0238f59b333e4bf38dac0e35da86c1a0.r2.dev/uploads/collaboration/1777794154619-d077efe6-08b4-4b81-a02f-502e797d806c-file_000000001df07206bf1223c321c9bf7a.png'
-    }
-];
-
-export const hololiveCharacterPool = [
-    {
-        characterId: 'hololive-raden',
-        name: 'らでん',
-        imageUrl: 'https://pub-0238f59b333e4bf38dac0e35da86c1a0.r2.dev/uploads/Hololive/1777794137243-870d562f-9a2e-4471-9d76-704e231df3c9-file_00000000c194720b81f3969b36b95484.png'
-    },
-    {
-        characterId: 'hololive-iroha',
-        name: 'いろは',
-        imageUrl: 'https://pub-0238f59b333e4bf38dac0e35da86c1a0.r2.dev/uploads/Hololive/1777794137243-0a5115ff-843a-4043-b069-f90f61d99824-file_00000000dda87209ab63fecafbdc7cfd.png'
-    },
-    {
-        characterId: 'hololive-miko',
-        name: 'みこ',
-        imageUrl: 'https://pub-0238f59b333e4bf38dac0e35da86c1a0.r2.dev/uploads/Hololive/1777794137243-17ad4fcd-f518-44f4-a93d-655776a74d00-file_000000002d94720688fd6c67e1d8749c.png'
-    },
-    {
-        characterId: 'hololive-fubuki',
-        name: 'フブキ',
-        imageUrl: 'https://pub-0238f59b333e4bf38dac0e35da86c1a0.r2.dev/uploads/Hololive/1777794137243-5a1815e4-78af-400a-b5a2-0f35e7b9abc0-file_000000008c28720b8eb6186b7c86f52e.png'
-    },
-    {
-        characterId: 'hololive-ayame',
-        name: 'あやめ',
-        imageUrl: 'https://pub-0238f59b333e4bf38dac0e35da86c1a0.r2.dev/uploads/Hololive/1777794137243-2e69c96b-6ad6-482c-bf82-828b49ae0155-file_00000000e14c7206ab928a762d56dc8e.png'
-    },
-    {
-        characterId: 'hololive-ina',
-        name: 'イナ',
-        imageUrl: 'https://pub-0238f59b333e4bf38dac0e35da86c1a0.r2.dev/uploads/Hololive/1777794137243-928dbf84-5ab8-47c8-9fc3-149eb244bbba-file_0000000049dc720993f8369365f8d807.png'
-    },
-    {
-        characterId: 'hololive-mio',
-        name: 'ミオ',
-        imageUrl: 'https://pub-0238f59b333e4bf38dac0e35da86c1a0.r2.dev/uploads/Hololive/1777794137243-54af5189-1e09-4fee-b226-4c533447cd89-file_0000000006c472098493cdc541a91abb.png'
-    }
-];
+export const characterPoolsBySet = characterProfilesBySet;
+export const ginzaCharacterPool = characterPoolsBySet.default;
+export const collaborationCharacterPool = characterPoolsBySet.collaboration;
+export const hololiveCharacterPool = characterPoolsBySet.hololive;
 
 export const geishaSetMetadata = {
     default: {
@@ -150,12 +48,6 @@ export const geishaSetMetadata = {
         key: 'hololive',
         label: 'Hololive'
     }
-};
-
-export const characterPoolsBySet = {
-    default: ginzaCharacterPool,
-    collaboration: collaborationCharacterPool,
-    hololive: hololiveCharacterPool
 };
 
 export const ginzaBoardSlotDefinitions = [
@@ -280,12 +172,59 @@ export const isSupportedGeishaSet = (setKey = DEFAULT_GEISHA_SET) => {
     return SUPPORTED_GEISHA_SETS.includes(activeSet) && Array.isArray(characterPool) && characterPool.length >= 7;
 };
 
+export const normalizeRoomSetupMode = (setupMode = DEFAULT_ROOM_SETUP_MODE) => {
+    if (setupMode === undefined || setupMode === null || setupMode === '') {
+        return DEFAULT_ROOM_SETUP_MODE;
+    }
+    if (!ROOM_SETUP_MODES.includes(setupMode)) {
+        throw new Error(`Unsupported room setup mode: ${String(setupMode)}`);
+    }
+    return setupMode;
+};
+
 export const getCharacterPoolForSet = (setKey = DEFAULT_GEISHA_SET) => {
     const activeSet = normalizeGeishaSet(setKey);
     if (!SUPPORTED_GEISHA_SETS.includes(activeSet)) {
         throw new Error(`Unsupported geisha set: ${activeSet}`);
     }
     return characterPoolsBySet[activeSet];
+};
+
+export const validateCustomCharacterSelection = (
+    setKey = DEFAULT_GEISHA_SET,
+    customSelection = {},
+    options = {}
+) => {
+    const activeSet = normalizeGeishaSet(setKey);
+    const characterPool = options.characterPool ?? getCharacterPoolForSet(activeSet);
+    validateCharacterSetData(activeSet, characterPool);
+
+    const characterIds = customSelection?.characterIds;
+    if (!Array.isArray(characterIds)) {
+        throw new Error('Custom character selection must include characterIds.');
+    }
+    if (characterIds.length !== CUSTOM_SELECTION_SIZE) {
+        throw new Error(`Custom character selection must contain exactly ${CUSTOM_SELECTION_SIZE} characterIds.`);
+    }
+
+    const validCharacterIds = new Set(characterPool.map((character) => character.characterId));
+    const uniqueCharacterIds = new Set();
+    characterIds.forEach((characterId) => {
+        if (typeof characterId !== 'string' || !characterId.trim()) {
+            throw new Error('Custom character selection contains an invalid characterId.');
+        }
+        if (uniqueCharacterIds.has(characterId)) {
+            throw new Error('Custom character selection must contain unique characterIds.');
+        }
+        if (!validCharacterIds.has(characterId)) {
+            throw new Error('Custom character selection contains a character outside the selected set.');
+        }
+        uniqueCharacterIds.add(characterId);
+    });
+
+    return {
+        characterIds: [...characterIds]
+    };
 };
 
 export const resolveRestorableGeishaSet = (
@@ -336,6 +275,24 @@ export const validateMatchBoardForSet = (setKey = DEFAULT_GEISHA_SET, geishas = 
     });
 };
 
+const boardCharacterIdSet = (geishas = []) => new Set(geishas.map((geisha) => geisha.characterId));
+
+export const validateMatchBoardForCustomSelection = (
+    setKey = DEFAULT_GEISHA_SET,
+    geishas = [],
+    customSelection = {}
+) => {
+    const validatedSelection = validateCustomCharacterSelection(setKey, customSelection);
+    validateMatchBoardForSet(setKey, geishas);
+
+    const boardIds = boardCharacterIdSet(geishas);
+    validatedSelection.characterIds.forEach((characterId) => {
+        if (!boardIds.has(characterId)) {
+            throw new Error(`Custom match board for ${normalizeGeishaSet(setKey)} must match the selected custom characters.`);
+        }
+    });
+};
+
 export const sanitizePendingInteractionForViewer = (pendingInteraction, viewerId) => {
     if (!pendingInteraction) {
         return null;
@@ -368,15 +325,23 @@ export const sanitizePendingInteractionForViewer = (pendingInteraction, viewerId
 
 export const resolveRestorableBoardForSet = (snapshot = {}, setKey = DEFAULT_GEISHA_SET) => {
     const resolvedBoard = snapshot?.baseGeishas ?? snapshot?.gameState?.geishas;
+    const setupMode = normalizeRoomSetupMode(snapshot?.setupMode ?? snapshot?.gameState?.setupMode);
+    const customSelection = snapshot?.customSelection ?? snapshot?.gameState?.customSelection;
 
     if (!resolvedBoard) {
         throw new Error(`Missing match board for ${normalizeGeishaSet(setKey)} room snapshot.`);
     }
 
     validateMatchBoardForSet(setKey, resolvedBoard);
+    if (setupMode === 'custom') {
+        validateMatchBoardForCustomSelection(setKey, resolvedBoard, customSelection);
+    }
 
     if (snapshot?.baseGeishas && snapshot?.gameState?.geishas) {
         validateMatchBoardForSet(setKey, snapshot.gameState.geishas);
+        if (setupMode === 'custom') {
+            validateMatchBoardForCustomSelection(setKey, snapshot.gameState.geishas, customSelection);
+        }
         const toBoardIdentity = (geishas) => [...geishas]
             .sort((left, right) => left.boardSlotId - right.boardSlotId)
             .map((geisha) => `${geisha.characterId}:${geisha.boardSlotId}`)
@@ -456,18 +421,23 @@ const createGeishasForSet = (setKey = DEFAULT_GEISHA_SET, options = {}) => {
     const {
         randomSource = defaultRandomSource,
         characterPool = getCharacterPoolForSet(setKey),
-        boardSlots = ginzaBoardSlotDefinitions
+        boardSlots = ginzaBoardSlotDefinitions,
+        selectedCharacterIds = null
     } = options;
 
     const activeSet = normalizeGeishaSet(setKey);
     validateCharacterSetData(activeSet, characterPool);
     validateGinzaSetupData(characterPool, boardSlots);
 
-    const selectedCharacters = shuffleArray(characterPool, randomSource).slice(0, 7);
+    const selectedCharacters = selectedCharacterIds
+        ? validateCustomCharacterSelection(activeSet, { characterIds: selectedCharacterIds }, { characterPool }).characterIds
+            .map((characterId) => characterPool.find((character) => character.characterId === characterId))
+        : shuffleArray(characterPool, randomSource).slice(0, 7);
+    const boardCharacters = shuffleArray(selectedCharacters, randomSource);
     const orderedSlots = [...boardSlots].sort((a, b) => a.slotOrder - b.slotOrder);
 
     return orderedSlots.map((slot, index) => {
-        const character = selectedCharacters[index];
+        const character = boardCharacters[index];
         return {
             id: slot.slotId,
             characterId: character.characterId,
@@ -483,6 +453,18 @@ const createGeishasForSet = (setKey = DEFAULT_GEISHA_SET, options = {}) => {
 export const createBaseGeishas = (setKey = DEFAULT_GEISHA_SET, options = {}) => createGeishasForSet(setKey, options);
 
 export const createRandomizedGeishas = (setKey = DEFAULT_GEISHA_SET, options = {}) => createBaseGeishas(setKey, options);
+
+export const createCustomSelectedGeishas = (
+    setKey = DEFAULT_GEISHA_SET,
+    customSelection = {},
+    options = {}
+) => {
+    const validatedSelection = validateCustomCharacterSelection(setKey, customSelection, options);
+    return createBaseGeishas(setKey, {
+        ...options,
+        selectedCharacterIds: validatedSelection.characterIds
+    });
+};
 
 export const cloneGeishas = (geishas = []) => geishas.map((geisha) => ({ ...geisha }));
 

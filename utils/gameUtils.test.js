@@ -4,19 +4,23 @@ import {
     buildDeckForGeishas,
     cloneGeishasForNextRound,
     collaborationCharacterPool,
+    createCustomSelectedGeishas,
     createGameStateWithOrder,
     createDeterministicRandomSource,
     createPlayer,
     createRandomizedGeishas,
     createWaitingGameState,
+    DEFAULT_ROOM_SETUP_MODE,
     ginzaBoardSlotDefinitions,
     ginzaCharacterPool,
     hololiveCharacterPool,
     isSupportedGeishaSet,
     normalizeGeishaSet,
+    normalizeRoomSetupMode,
     resolveRestorableBoardForSet,
     resolveRestorableGeishaSet,
     sanitizePendingInteractionForViewer,
+    validateCustomCharacterSelection,
     validateCharacterSetData,
     validateGinzaSetupData,
     validateMatchBoardForSet
@@ -210,6 +214,89 @@ test('exactly-seven production pools use every profile while allowing different 
     });
 });
 
+test('custom setup accepts exactly seven valid selected IDs from each supported set', () => {
+    Object.entries(supportedProductionPools).forEach(([setKey, characterPool]) => {
+        const characterIds = characterPool.map((character) => character.characterId);
+        const selection = validateCustomCharacterSelection(setKey, { characterIds });
+        const board = createCustomSelectedGeishas(setKey, { characterIds }, {
+            randomSource: createDeterministicRandomSource([6, 5, 4, 3, 2, 1, 0])
+        });
+
+        assert.deepEqual(selection.characterIds, characterIds);
+        assertSevenUniqueBoard(board, characterPool);
+        assert.deepEqual(
+            new Set(board.map((geisha) => geisha.characterId)),
+            new Set(characterIds)
+        );
+        assert.deepEqual(board.map((geisha) => geisha.charmPoints), [2, 2, 2, 3, 3, 4, 5]);
+        assert.deepEqual(board.map((geisha) => geisha.boardSlotId), [1, 2, 3, 4, 5, 6, 7]);
+    });
+});
+
+test('custom setup rejects invalid selected IDs without falling back to random boards', () => {
+    const validIds = hololiveCharacterPool.map((character) => character.characterId);
+
+    assert.throws(
+        () => validateCustomCharacterSelection('hololive', { characterIds: validIds.slice(0, 6) }),
+        /exactly 7/
+    );
+    assert.throws(
+        () => validateCustomCharacterSelection('hololive', { characterIds: [...validIds, 'hololive-extra'] }),
+        /exactly 7/
+    );
+    assert.throws(
+        () => validateCustomCharacterSelection('hololive', { characterIds: [...validIds.slice(0, 6), validIds[0]] }),
+        /unique/
+    );
+    assert.throws(
+        () => validateCustomCharacterSelection('hololive', { characterIds: [...validIds.slice(0, 6), ginzaCharacterPool[0].characterId] }),
+        /outside the selected set/
+    );
+    assert.throws(
+        () => validateCustomCharacterSelection('hololive', { characterIds: [...validIds.slice(0, 6), 'hololive-stale'] }),
+        /outside the selected set/
+    );
+    assert.throws(
+        () => validateCustomCharacterSelection('hololive', { characterIds: [...validIds.slice(0, 6), null] }),
+        /invalid characterId/
+    );
+    assert.throws(
+        () => validateCustomCharacterSelection('hololive', {}),
+        /must include characterIds/
+    );
+});
+
+test('room setup mode defaults to random and rejects unknown modes', () => {
+    assert.equal(normalizeRoomSetupMode(undefined), DEFAULT_ROOM_SETUP_MODE);
+    assert.equal(normalizeRoomSetupMode(null), DEFAULT_ROOM_SETUP_MODE);
+    assert.equal(normalizeRoomSetupMode(''), DEFAULT_ROOM_SETUP_MODE);
+    assert.equal(normalizeRoomSetupMode('random'), 'random');
+    assert.equal(normalizeRoomSetupMode('custom'), 'custom');
+    assert.throws(
+        () => normalizeRoomSetupMode('draft'),
+        /Unsupported room setup mode/
+    );
+});
+
+test('random setup ignores custom IDs while custom setup uses only the selected pool', () => {
+    const customSelection = {
+        characterIds: hololiveCharacterPool.map((character) => character.characterId)
+    };
+    const randomBoard = createRandomizedGeishas('hololive', {
+        randomSource: createDeterministicRandomSource([0, 1, 2, 3, 4, 5, 6])
+    });
+    const customBoard = createCustomSelectedGeishas('hololive', customSelection, {
+        randomSource: createDeterministicRandomSource([6, 5, 4, 3, 2, 1, 0])
+    });
+
+    assertSevenUniqueBoard(randomBoard, hololiveCharacterPool);
+    assertSevenUniqueBoard(customBoard, hololiveCharacterPool);
+    assert.deepEqual(
+        new Set(customBoard.map((geisha) => geisha.characterId)),
+        new Set(customSelection.characterIds)
+    );
+});
+
 test('oversized pools sample seven unique profiles from the whole pool', () => {
     const board = createRandomizedGeishas('default', {
         characterPool: oversizedCharacterPool,
@@ -351,6 +438,53 @@ test('room snapshots must include a valid seven-character board for restore', ()
     );
 });
 
+test('custom room snapshots must match the saved custom selected IDs', () => {
+    const selectedIds = hololiveCharacterPool.map((character) => character.characterId);
+    const hololiveBoard = createCustomSelectedGeishas('hololive', { characterIds: selectedIds }, {
+        randomSource: createDeterministicRandomSource([1, 2, 3, 4, 5, 6, 7])
+    });
+
+    assert.deepEqual(
+        resolveRestorableBoardForSet({
+            geishaSet: 'hololive',
+            setupMode: 'custom',
+            customSelection: { characterIds: selectedIds },
+            baseGeishas: hololiveBoard
+        }, 'hololive'),
+        hololiveBoard
+    );
+
+    assert.throws(
+        () => resolveRestorableBoardForSet({
+            geishaSet: 'hololive',
+            setupMode: 'custom',
+            customSelection: { characterIds: selectedIds.slice(0, 6) },
+            baseGeishas: hololiveBoard
+        }, 'hololive'),
+        /exactly 7/
+    );
+
+    assert.throws(
+        () => resolveRestorableBoardForSet({
+            geishaSet: 'hololive',
+            setupMode: 'custom',
+            customSelection: { characterIds: [...selectedIds.slice(0, 6), 'hololive-stale'] },
+            baseGeishas: hololiveBoard
+        }, 'hololive'),
+        /outside the selected set/
+    );
+
+    assert.throws(
+        () => resolveRestorableBoardForSet({
+            geishaSet: 'hololive',
+            setupMode: 'custom',
+            customSelection: { characterIds: [...selectedIds.slice(0, 6), ginzaCharacterPool[0].characterId] },
+            baseGeishas: hololiveBoard
+        }, 'hololive'),
+        /outside the selected set/
+    );
+});
+
 test('pending interactions are fully visible only to the responding player', () => {
     const offeredCards = [
         { id: 'gift-1', geishaId: 1, type: 'item' },
@@ -439,6 +573,33 @@ test('joiner waiting state uses the room creator selected set and generated boar
     );
 });
 
+test('joiner waiting state preserves custom selected board identity', () => {
+    const selectedIds = collaborationCharacterPool.map((character) => character.characterId);
+    const customBoard = createCustomSelectedGeishas('collaboration', { characterIds: selectedIds }, {
+        randomSource: createDeterministicRandomSource([2, 4, 6, 1, 3, 5, 0])
+    });
+    const waitingState = createWaitingGameState(
+        'custom-room-1',
+        ['host', 'joiner'],
+        customBoard,
+        'collaboration',
+        {
+            host: { name: 'Host' },
+            joiner: { name: 'Joiner' }
+        }
+    );
+
+    assert.equal(waitingState.geishaSet, 'collaboration');
+    assert.deepEqual(
+        serializeBoardIdentity(waitingState.geishas),
+        serializeBoardIdentity(customBoard)
+    );
+    assert.deepEqual(
+        new Set(waitingState.geishas.map((geisha) => geisha.characterId)),
+        new Set(selectedIds)
+    );
+});
+
 test('deck generation remains bound to board slots for non-default sets', () => {
     const geishas = createRandomizedGeishas('hololive', {
         randomSource: createDeterministicRandomSource([1, 2, 3, 4, 5, 6, 7])
@@ -524,4 +685,24 @@ test('rematch setup can reshuffle the seven-character board with a different det
         boardA.map((geisha) => geisha.characterId),
         boardB.map((geisha) => geisha.characterId)
     );
+});
+
+test('custom rematch setup reuses the selected IDs while allowing slot reassignment', () => {
+    const selectedIds = hololiveCharacterPool.map((character) => character.characterId);
+    const boardA = createCustomSelectedGeishas('hololive', { characterIds: selectedIds }, {
+        randomSource: createDeterministicRandomSource([0, 1, 2, 3, 4, 5, 6])
+    });
+    const boardB = createCustomSelectedGeishas('hololive', { characterIds: selectedIds }, {
+        randomSource: createDeterministicRandomSource([6, 5, 4, 3, 2, 1, 0])
+    });
+
+    assert.deepEqual(
+        new Set(boardA.map((geisha) => geisha.characterId)),
+        new Set(selectedIds)
+    );
+    assert.deepEqual(
+        new Set(boardB.map((geisha) => geisha.characterId)),
+        new Set(selectedIds)
+    );
+    assert.notDeepEqual(serializeBoardIdentity(boardA), serializeBoardIdentity(boardB));
 });

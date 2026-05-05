@@ -5,7 +5,9 @@ import { WebSocketServer } from 'ws';
 import cors from 'cors';
 import {
     DEFAULT_GEISHA_SET,
+    DEFAULT_ROOM_SETUP_MODE,
     createRandomizedGeishas,
+    createCustomSelectedGeishas,
     buildDeckForGeishas,
     cloneGeishasForNextRound,
     cloneGeishas,
@@ -14,6 +16,7 @@ import {
     createWaitingGameState,
     isSupportedGeishaSet,
     normalizeGeishaSet,
+    normalizeRoomSetupMode,
     resolveRestorableBoardForSet,
     resolveRestorableGeishaSet,
     sanitizePendingInteractionForViewer
@@ -56,6 +59,7 @@ const normalizeNpcDifficulty = (difficulty) => {
 const LEGACY_GEISHA_SET_ERROR_MESSAGE = '不支援舊版藝妓組合資料，請重新建立對戰。';
 const LEGACY_ROOM_SNAPSHOT_ERROR_MESSAGE = '房間資料無效，請重新建立對戰。';
 const GEISHA_SET_CONFIG_ERROR_MESSAGE = '角色組合資料設定錯誤，請重新建立對戰。';
+const CUSTOM_SELECTION_ERROR_MESSAGE = '自訂角色選擇無效，請重新選擇七位同組合角色。';
 
 const normalizePlayerMeta = (playerId, payload = {}) => {
     const displayName = typeof payload.displayName === 'string' && payload.displayName.trim()
@@ -135,6 +139,9 @@ class GameRoom {
         this.hostId = null;
         // 藝妓組合
         this.geishaSet = DEFAULT_GEISHA_SET;
+        // 建房角色設定模式
+        this.setupMode = DEFAULT_ROOM_SETUP_MODE;
+        this.customSelection = null;
         this.orderDecisionState = {
             isDeciding: false,
             result: null,
@@ -165,6 +172,8 @@ class GameRoom {
             roomId: this.roomId,
             hostId: this.hostId,
             geishaSet: this.geishaSet,
+            setupMode: this.setupMode,
+            customSelection: this.customSelection,
             npcId: this.npcId,
             npcDifficulty: this.npcDifficulty,
             createdAt: this.createdAt,
@@ -244,7 +253,10 @@ class GameRoom {
 
     regenerateBaseGeishas() {
         try {
-            this.baseGeishas = createRandomizedGeishas(this.geishaSet ?? DEFAULT_GEISHA_SET);
+            const activeGeishaSet = this.geishaSet ?? DEFAULT_GEISHA_SET;
+            this.baseGeishas = this.setupMode === 'custom'
+                ? createCustomSelectedGeishas(activeGeishaSet, this.customSelection)
+                : createRandomizedGeishas(activeGeishaSet);
             return true;
         } catch (error) {
             backendLogger.error(`❌ 房間 ${this.roomId} 建立藝妓資料失敗`, {
@@ -343,7 +355,8 @@ class GameRoom {
     startRematch() {
         backendLogger.info(`🔁 房間 ${this.roomId} 重新開始對戰`, {
             roomId: this.roomId,
-            geishaSet: this.geishaSet
+            geishaSet: this.geishaSet,
+            setupMode: this.setupMode
         });
 
         this.clearNpcTimers();
@@ -2280,6 +2293,10 @@ const restoreRoomFromSnapshot = (snapshot) => {
     const room = new GameRoom(snapshot.roomId);
     room.hostId = snapshot.hostId ?? null;
     room.geishaSet = snapshotGeishaSet;
+    room.setupMode = normalizeRoomSetupMode(snapshot.setupMode ?? snapshot.gameState?.setupMode);
+    room.customSelection = room.setupMode === 'custom'
+        ? { characterIds: [...(snapshot.customSelection ?? snapshot.gameState?.customSelection).characterIds] }
+        : null;
     room.npcId = snapshot.npcId ?? null;
     room.npcDifficulty = snapshot.npcDifficulty ?? null;
     room.createdAt = snapshot.createdAt ?? Date.now();
@@ -2381,10 +2398,20 @@ wss.on('connection', (ws, req) => {
         const mode = payload.mode === 'npc' ? 'npc' : 'online';
         const aiDifficulty = normalizeNpcDifficulty(payload.aiDifficulty ?? 'easy');
         const requestedGeishaSet = normalizeGeishaSet(payload.geishaSet);
+        let setupMode = DEFAULT_ROOM_SETUP_MODE;
         if (!isSupportedGeishaSet(requestedGeishaSet)) {
             ws.send(JSON.stringify({
                 type: 'ERROR',
                 payload: { message: LEGACY_GEISHA_SET_ERROR_MESSAGE }
+            }));
+            return;
+        }
+        try {
+            setupMode = normalizeRoomSetupMode(payload.setupMode);
+        } catch (_error) {
+            ws.send(JSON.stringify({
+                type: 'ERROR',
+                payload: { message: CUSTOM_SELECTION_ERROR_MESSAGE }
             }));
             return;
         }
@@ -2397,16 +2424,23 @@ wss.on('connection', (ws, req) => {
         currentRoomId = roomId;
         room.hostId = currentPlayerId;
         room.geishaSet = requestedGeishaSet;
+        room.setupMode = setupMode;
+        room.customSelection = setupMode === 'custom'
+            ? payload.customSelection
+            : null;
         if (!room.regenerateBaseGeishas()) {
             gameRooms.delete(roomId);
             currentRoomId = null;
             currentPlayerId = null;
             ws.send(JSON.stringify({
                 type: 'ERROR',
-                payload: { message: GEISHA_SET_CONFIG_ERROR_MESSAGE }
+                payload: { message: setupMode === 'custom' ? CUSTOM_SELECTION_ERROR_MESSAGE : GEISHA_SET_CONFIG_ERROR_MESSAGE }
             }));
             return;
         }
+        room.customSelection = setupMode === 'custom'
+            ? { characterIds: [...room.customSelection.characterIds] }
+            : null;
 
         room.addPlayer(currentPlayerId, ws, normalizePlayerMeta(currentPlayerId, payload));
 
@@ -2419,6 +2453,7 @@ wss.on('connection', (ws, req) => {
             playerId: currentPlayerId,
             mode,
             geishaSet: requestedGeishaSet,
+            setupMode,
             origin: typeof origin === 'string' ? origin : 'unknown'
         });
 
