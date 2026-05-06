@@ -424,10 +424,13 @@ class GameRoom {
     }
 
     // 傳送錯誤訊息給指定玩家（統一錯誤回傳格式）
-    sendError(playerId, message) {
+    sendError(playerId, message, code) {
         this.sendToPlayer(playerId, {
             type: 'ERROR',
-            payload: { message }
+            payload: {
+                message,
+                ...(code ? { code } : {})
+            }
         });
     }
 
@@ -2606,7 +2609,7 @@ wss.on('connection', (ws, req) => {
         if (!payload?.roomId || !payload?.playerId) {
             ws.send(JSON.stringify({
                 type: 'ERROR',
-                payload: { message: '缺少 roomId 或 playerId' }
+                payload: { message: '缺少 roomId 或 playerId', code: 'INVALID_JOIN_REQUEST' }
             }));
             return;
         }
@@ -2624,7 +2627,7 @@ wss.on('connection', (ws, req) => {
                 } else if (restoreResult.errorMessage) {
                     ws.send(JSON.stringify({
                         type: 'ERROR',
-                        payload: { message: restoreResult.errorMessage }
+                        payload: { message: restoreResult.errorMessage, code: 'ROOM_RESTORE_FAILED' }
                     }));
                     return;
                 }
@@ -2634,14 +2637,22 @@ wss.on('connection', (ws, req) => {
         if (!room) {
             ws.send(JSON.stringify({
                 type: 'ERROR',
-                payload: { message: '房間不存在' }
+                payload: { message: '房間不存在', code: 'ROOM_NOT_FOUND' }
             }));
             return;
         }
         if (!room.ensureBaseGeishas()) {
             ws.send(JSON.stringify({
                 type: 'ERROR',
-                payload: { message: GEISHA_SET_CONFIG_ERROR_MESSAGE }
+                payload: { message: GEISHA_SET_CONFIG_ERROR_MESSAGE, code: 'ROOM_CONFIG_INVALID' }
+            }));
+            return;
+        }
+        const isExistingPlayer = room.players.some(player => player.playerId === playerId);
+        if (!isExistingPlayer && room.gameState?.phase && room.gameState.phase !== 'waiting') {
+            ws.send(JSON.stringify({
+                type: 'ERROR',
+                payload: { message: '房間已開始對局', code: 'ROOM_ALREADY_STARTED' }
             }));
             return;
         }
@@ -2653,7 +2664,7 @@ wss.on('connection', (ws, req) => {
         if (result === 'full') {
             ws.send(JSON.stringify({
                 type: 'ERROR',
-                payload: { message: '房間已滿' }
+                payload: { message: '房間已滿', code: 'ROOM_FULL' }
             }));
             return;
         }
