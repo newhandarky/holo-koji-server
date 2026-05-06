@@ -84,6 +84,49 @@ test('summarizeGameState emits redacted server state summary only', () => {
     });
 });
 
+test('summarizeGameState reports opening deal status without removed card identity', () => {
+    const summary = summarizeGameState({
+        gameId: 'ROOM01',
+        phase: 'playing',
+        players: [],
+        removedCard: {
+            id: 'removed-secret-card',
+            geishaId: 7,
+            type: 'sake_07'
+        },
+        openingDeal: {
+            sequenceId: 'opening-room-1-round-1',
+            status: 'completed',
+            replayable: true,
+            steps: [
+                {
+                    type: 'DEAL_CARD_BACK',
+                    order: 1,
+                    targetPlayerId: 'p1',
+                    cardIndex: 1,
+                    card: {
+                        id: 'hidden-step-card'
+                    }
+                }
+            ]
+        }
+    });
+
+    assert.deepEqual(summary, {
+        gameId: 'ROOM01',
+        phase: 'playing',
+        playerCount: 0,
+        hasPendingInteraction: false,
+        removedCardPresent: true,
+        openingDealStatus: 'completed',
+        openingDealReplayable: true,
+        openingDealStepCount: 1
+    });
+    assert.equal(Object.prototype.hasOwnProperty.call(summary, 'removedCard'), false);
+    assert.equal(Object.prototype.hasOwnProperty.call(summary, 'steps'), false);
+    assert.equal(Object.prototype.hasOwnProperty.call(summary, 'card'), false);
+});
+
 test('summarizeWebSocketMessage reports account status without LINE profile details', () => {
     const summary = summarizeWebSocketMessage({
         type: 'ACCOUNT_SYNC_RESULT',

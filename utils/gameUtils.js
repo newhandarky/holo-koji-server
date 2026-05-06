@@ -323,6 +323,49 @@ export const sanitizePendingInteractionForViewer = (pendingInteraction, viewerId
     return null;
 };
 
+const createHiddenCard = (prefix, index) => ({
+    id: `hidden-${prefix}-${index}`,
+    geishaId: 0,
+    type: 'hidden'
+});
+
+const createHiddenCards = (count, prefix) => Array.from({ length: count }, (_, index) => createHiddenCard(prefix, index));
+
+export const buildPlayerVisibleGameState = (gameState, viewerId, options = {}) => {
+    if (!gameState) {
+        return null;
+    }
+
+    const activeGeishaSet = gameState.geishaSet ?? options.geishaSet ?? DEFAULT_GEISHA_SET;
+    const sanitizedPlayers = (gameState.players ?? []).map((player) => {
+        if (player.id === viewerId) {
+            return player;
+        }
+
+        return {
+            ...player,
+            hand: createHiddenCards(player.hand?.length ?? 0, `${player.id}-hand`),
+            secretCards: [],
+            discardedCards: createHiddenCards(player.discardedCards?.length ?? 0, `${player.id}-discard`)
+        };
+    });
+
+    return {
+        ...gameState,
+        geishaSet: activeGeishaSet,
+        players: sanitizedPlayers,
+        drawPile: [],
+        removedCard: null,
+        settlement: gameState.phase === 'ended'
+            ? {
+                ...(gameState.settlement ?? {}),
+                ...(gameState.removedCard ? { removedCard: gameState.removedCard } : {})
+            }
+            : undefined,
+        pendingInteraction: sanitizePendingInteractionForViewer(gameState.pendingInteraction, viewerId)
+    };
+};
+
 export const resolveRestorableBoardForSet = (snapshot = {}, setKey = DEFAULT_GEISHA_SET) => {
     const resolvedBoard = snapshot?.baseGeishas ?? snapshot?.gameState?.geishas;
     const setupMode = normalizeRoomSetupMode(snapshot?.setupMode ?? snapshot?.gameState?.setupMode);
@@ -525,6 +568,8 @@ export const createWaitingGameState = (
         drawPile: [],
         discardPile: [],
         removedCard: null,
+        openingDeal: undefined,
+        settlement: undefined,
         pendingInteraction: null,
         lastAction: undefined
     };
@@ -582,6 +627,8 @@ export const createGameStateWithOrder = (
             drawPile: previousState.drawPile ?? [],
             discardPile: previousState.discardPile ?? [],
             removedCard: previousState.removedCard ?? null,
+            openingDeal: previousState.openingDeal,
+            settlement: previousState.settlement,
             pendingInteraction: null,
             lastAction: undefined
         }
@@ -628,5 +675,61 @@ export const buildDeckForGeishas = (geishas, options = {}) => {
     return {
         deck: shuffled,
         removedCard
+    };
+};
+
+export const buildOpeningDealSummary = (dealSequence = [], options = {}) => {
+    const {
+        sequenceId = 'opening-deal',
+        status = 'completed',
+        replayable = true
+    } = options;
+    const cardIndexesByPlayer = new Map();
+    const steps = [
+        {
+            type: 'BURN_HIDDEN_CARD',
+            order: 0,
+            targetZone: 'hidden-reserve'
+        }
+    ];
+
+    dealSequence.forEach((step) => {
+        const currentIndex = (cardIndexesByPlayer.get(step.playerId) ?? 0) + 1;
+        cardIndexesByPlayer.set(step.playerId, currentIndex);
+        steps.push({
+            type: 'DEAL_CARD_BACK',
+            order: steps.length,
+            targetPlayerId: step.playerId,
+            cardIndex: currentIndex
+        });
+    });
+
+    steps.push({
+        type: 'OPENING_DEAL_COMPLETE',
+        order: steps.length
+    });
+
+    return {
+        sequenceId,
+        status,
+        completed: status === 'completed' || status === 'not_replayable',
+        replayable,
+        steps
+    };
+};
+
+export const markOpeningDealNotReplayable = (openingDeal) => {
+    if (!openingDeal) {
+        return openingDeal;
+    }
+
+    return {
+        ...openingDeal,
+        status: 'not_replayable',
+        replayable: false,
+        completed: true,
+        steps: Array.isArray(openingDeal.steps)
+            ? openingDeal.steps.map((step) => ({ ...step }))
+            : []
     };
 };

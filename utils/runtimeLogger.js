@@ -81,6 +81,10 @@ export const summarizeGameState = (state) => {
         accountPersistenceMode: state.accountPersistenceStatus?.mode === 'durable' || state.accountPersistenceStatus?.mode === 'temporary'
             ? state.accountPersistenceStatus.mode
             : undefined,
-        hasPendingInteraction: Boolean(state.pendingInteraction)
+        hasPendingInteraction: Boolean(state.pendingInteraction),
+        removedCardPresent: state.removedCard ? true : undefined,
+        openingDealStatus: typeof state.openingDeal?.status === 'string' ? state.openingDeal.status : undefined,
+        openingDealReplayable: typeof state.openingDeal?.replayable === 'boolean' ? state.openingDeal.replayable : undefined,
+        openingDealStepCount: Array.isArray(state.openingDeal?.steps) ? state.openingDeal.steps.length : undefined
     });
 };

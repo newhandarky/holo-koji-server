@@ -11,9 +11,11 @@ import {
     buildDeckForGeishas,
     cloneGeishasForNextRound,
     cloneGeishas,
-    createGameStateWithOrder,
     createPlayer,
     createWaitingGameState,
+    buildOpeningDealSummary,
+    buildPlayerVisibleGameState,
+    markOpeningDealNotReplayable,
     isSupportedGeishaSet,
     normalizeGeishaSet,
     normalizeRoomSetupMode,
@@ -344,6 +346,23 @@ class GameRoom {
             return;
         }
 
+        if (!this.orderDecisionState.result || this.gameState?.phase !== 'deciding_order') {
+            backendLogger.info(`ℹ️ 玩家 ${playerId} 的準備確認不在有效開局階段，忽略重送`, {
+                roomId: this.roomId,
+                playerId,
+                phase: this.gameState?.phase
+            });
+            return;
+        }
+
+        if (this.readyConfirmations.has(playerId)) {
+            backendLogger.info(`ℹ️ 玩家 ${playerId} 重複準備確認，忽略重送`, {
+                roomId: this.roomId,
+                playerId
+            });
+            return;
+        }
+
         this.readyConfirmations.add(playerId);
         const waitingFor = this.players
             .map(player => player.playerId)
@@ -453,39 +472,18 @@ class GameRoom {
             return null;
         }
 
-        if (!this.gameState.geishaSet) {
-            this.gameState.geishaSet = this.geishaSet ?? DEFAULT_GEISHA_SET;
-        }
-
-        const sanitizedPlayers = this.gameState.players.map((player) => {
-            if (player.id === viewerId) {
-                return player;
-            }
-
-            return {
-                ...player,
-                hand: createMaskedCards(player.hand.length, `${player.id}-hand`),
-                secretCards: [],
-                discardedCards: createMaskedCards(player.discardedCards.length, `${player.id}-discard`)
-            };
+        const visibleState = buildPlayerVisibleGameState(this.gameState, viewerId, {
+            geishaSet: this.geishaSet ?? DEFAULT_GEISHA_SET
         });
-
-        return {
-            ...this.gameState,
-            players: sanitizedPlayers,
-            drawPile: [],
-            removedCard: null,
-            pendingInteraction: sanitizePendingInteractionForViewer(this.gameState.pendingInteraction, viewerId)
-        };
+        if (visibleState?.geishaSet && !this.gameState.geishaSet) {
+            this.gameState.geishaSet = visibleState.geishaSet;
+        }
+        return visibleState;
     }
 
-    // 依玩家視角建立發牌動畫序列（只顯示自己的牌）
+    // 依玩家視角建立發牌動畫序列（開局動畫一律只顯示背面）
     buildDealSequenceForPlayer(playerId) {
         return this.dealSequence.map((step, index) => {
-            if (step.playerId === playerId) {
-                return step;
-            }
-
             return {
                 ...step,
                 card: createMaskedCard(`${playerId}-deal`, index)
@@ -623,7 +621,8 @@ class GameRoom {
 
         const dealingDeck = [...deck];
         const dealSequence = [];
-        const playersState = playerIds.map((id) => createPlayer(id));
+        const playerMetaMap = this.getPlayerMetaMap();
+        const playersState = playerIds.map((id) => createPlayer(id, playerMetaMap[id]));
 
         // 每位玩家發 6 張手牌
         for (let round = 0; round < 6; round += 1) {
@@ -649,6 +648,9 @@ class GameRoom {
         this.dealSequence = dealSequence;
 
         const resolvedRound = roundNumber ?? this.gameState?.round ?? 1;
+        const openingDeal = buildOpeningDealSummary(dealSequence, {
+            sequenceId: `opening-${this.roomId}-round-${resolvedRound}`
+        });
 
         // 組合本回合遊戲狀態
         this.gameState = {
@@ -676,6 +678,8 @@ class GameRoom {
             drawPile: dealingDeck,
             discardPile: [],
             removedCard,
+            openingDeal,
+            settlement: undefined,
             pendingInteraction: null,
             lastAction: undefined
         };
@@ -690,13 +694,55 @@ class GameRoom {
         this.validateRoundSetup();
     }
 
+    // 準備順序決定狀態；真正開局牌務要等雙方確認順序後才建立
+    prepareOrderDecisionState() {
+        const playerIds = this.players.map(p => p.playerId);
+
+        if (playerIds.length < 2) {
+            backendLogger.warn(`⚠️ 房間 ${this.roomId} 嘗試準備順序決定，但玩家不足`, {
+                roomId: this.roomId,
+                playerCount: playerIds.length
+            });
+            return false;
+        }
+
+        if (!this.ensureBaseGeishas()) {
+            return false;
+        }
+
+        const nextState = createWaitingGameState(
+            this.roomId,
+            playerIds,
+            cloneGeishas(this.baseGeishas),
+            this.geishaSet,
+            this.getPlayerMetaMap()
+        );
+        nextState.hostId = this.hostId;
+        nextState.phase = 'deciding_order';
+        nextState.orderDecision = {
+            isOpen: true,
+            phase: 'deciding',
+            players: playerIds,
+            result: undefined,
+            confirmations: [],
+            waitingFor: playerIds,
+            currentPlayer: playerIds[0] ?? ''
+        };
+
+        this.gameState = nextState;
+        this.dealSequence = [];
+        return true;
+    }
+
     // 開始隨機決定順序
     startOrderDecision() {
         backendLogger.info(`🎲 房間 ${this.roomId} 開始隨機決定玩家順序`, {
             roomId: this.roomId
         });
 
-        this.prepareRoundState({ openOrderDecision: true });
+        if (!this.prepareOrderDecisionState()) {
+            return;
+        }
         this.orderDecisionState.isDeciding = true;
         this.orderDecisionState.confirmations.clear();
 
@@ -790,6 +836,14 @@ class GameRoom {
             return;
         }
 
+        if (this.orderDecisionState.confirmations.has(playerId)) {
+            backendLogger.info(`ℹ️ 玩家 ${playerId} 重複確認順序，忽略重送`, {
+                roomId: this.roomId,
+                playerId
+            });
+            return;
+        }
+
         this.orderDecisionState.confirmations.add(playerId);
         backendLogger.info(`✅ 玩家 ${playerId} 已確認順序`, {
             roomId: this.roomId,
@@ -836,14 +890,11 @@ class GameRoom {
         if (!this.ensureBaseGeishas()) {
             return;
         }
-        const { gameState } = createGameStateWithOrder(
-            this.roomId,
-            order,
-            this.baseGeishas,
-            this.gameState,
-            this.getPlayerMetaMap()
-        );
-        this.gameState = gameState;
+        this.prepareRoundState({
+            orderedPlayerIds: order,
+            roundNumber: this.gameState?.round ?? 1,
+            openOrderDecision: false
+        });
         this.lastRoundStarterId = order[0];
 
         backendLogger.info(`🚀 遊戲開始`, {
@@ -876,6 +927,7 @@ class GameRoom {
             result: null,
             confirmations: new Set()
         };
+        this.readyConfirmations.clear();
     }
 
     // 傳送指定事件與可見遊戲狀態（避免資料外洩）
@@ -932,6 +984,9 @@ class GameRoom {
         const token = player.actionTokens.find(item => item.type === actionType);
         if (token) {
             token.used = true;
+        }
+        if (this.gameState?.openingDeal?.replayable) {
+            this.gameState.openingDeal = markOpeningDealNotReplayable(this.gameState.openingDeal);
         }
     }
 
@@ -1594,6 +1649,12 @@ class GameRoom {
         if (winner) {
             this.gameState.phase = 'ended';
             this.gameState.winner = winner;
+            if (this.gameState.removedCard) {
+                this.gameState.settlement = {
+                    ...(this.gameState.settlement ?? {}),
+                    removedCard: this.gameState.removedCard
+                };
+            }
             if (!this.currentCompletionId) {
                 this.matchCompletionCounter += 1;
                 this.currentCompletionId = `${this.roomId}:match-${this.matchCompletionCounter}:ended`;

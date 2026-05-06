@@ -2,6 +2,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
     buildDeckForGeishas,
+    buildOpeningDealSummary,
+    buildPlayerVisibleGameState,
     cloneGeishasForNextRound,
     collaborationCharacterPool,
     createCustomSelectedGeishas,
@@ -17,6 +19,7 @@ import {
     isSupportedGeishaSet,
     normalizeGeishaSet,
     normalizeRoomSetupMode,
+    markOpeningDealNotReplayable,
     resolveRestorableBoardForSet,
     resolveRestorableGeishaSet,
     sanitizePendingInteractionForViewer,
@@ -83,6 +86,49 @@ const assertSevenUniqueBoard = (board, characterPool) => {
     });
 };
 
+const forbiddenOpeningDealFields = [
+    'card',
+    'cardId',
+    'geishaId',
+    'boardSlotId',
+    'itemAssetName',
+    'itemLabel',
+    'itemImageUrl',
+    'itemIconUrl',
+    'charmPoints'
+];
+
+const makeOpeningDealSequence = (playerIds = ['player1', 'player2']) => {
+    const geishas = createRandomizedGeishas('default', {
+        randomSource: createDeterministicRandomSource([1, 2, 3, 4, 5, 6, 7])
+    });
+    const { deck } = buildDeckForGeishas(geishas, {
+        randomSource: createDeterministicRandomSource([7, 6, 5, 4, 3, 2, 1])
+    });
+    const dealingDeck = [...deck];
+    const sequence = [];
+
+    for (let round = 0; round < 6; round += 1) {
+        playerIds.forEach((playerId) => {
+            sequence.push({
+                order: sequence.length,
+                playerId,
+                card: dealingDeck.shift()
+            });
+        });
+    }
+
+    return sequence;
+};
+
+const assertNoOpeningDealCardIdentity = (summary) => {
+    const encoded = JSON.stringify(summary);
+    forbiddenOpeningDealFields.forEach((field) => {
+        assert.equal(Object.prototype.hasOwnProperty.call(summary, field), false);
+        assert.equal(encoded.includes(`"${field}"`), false);
+    });
+};
+
 test('default Ginza setup is reproducible with the same deterministic random source', () => {
     const seed = [4, 1, 6, 0, 3, 2, 5, 9, 8, 7];
     const boardA = createRandomizedGeishas('default', {
@@ -121,6 +167,172 @@ test('Ginza deck generation keeps rule identity and adds display-only item paylo
             assert.ok(card.itemIconUrl);
         });
     });
+});
+
+test('opening deal summary burns one hidden card and alternates dealt backs', () => {
+    const sequence = makeOpeningDealSequence(['first', 'second']);
+
+    const summary = buildOpeningDealSummary(sequence, {
+        sequenceId: 'opening-room-1-round-1'
+    });
+
+    assert.equal(summary.sequenceId, 'opening-room-1-round-1');
+    assert.equal(summary.status, 'completed');
+    assert.equal(summary.completed, true);
+    assert.equal(summary.replayable, true);
+    assert.equal(summary.steps.length, 14);
+    assert.deepEqual(summary.steps[0], {
+        type: 'BURN_HIDDEN_CARD',
+        order: 0,
+        targetZone: 'hidden-reserve'
+    });
+    assert.deepEqual(
+        summary.steps.slice(1, 13).map((step) => [step.type, step.targetPlayerId, step.cardIndex]),
+        [
+            ['DEAL_CARD_BACK', 'first', 1],
+            ['DEAL_CARD_BACK', 'second', 1],
+            ['DEAL_CARD_BACK', 'first', 2],
+            ['DEAL_CARD_BACK', 'second', 2],
+            ['DEAL_CARD_BACK', 'first', 3],
+            ['DEAL_CARD_BACK', 'second', 3],
+            ['DEAL_CARD_BACK', 'first', 4],
+            ['DEAL_CARD_BACK', 'second', 4],
+            ['DEAL_CARD_BACK', 'first', 5],
+            ['DEAL_CARD_BACK', 'second', 5],
+            ['DEAL_CARD_BACK', 'first', 6],
+            ['DEAL_CARD_BACK', 'second', 6]
+        ]
+    );
+    assert.deepEqual(summary.steps[13], {
+        type: 'OPENING_DEAL_COMPLETE',
+        order: 13
+    });
+});
+
+test('opening deal summary contains no card identity fields', () => {
+    const sequence = makeOpeningDealSequence();
+
+    const summary = buildOpeningDealSummary(sequence, {
+        sequenceId: 'opening-room-2-round-1'
+    });
+
+    assertNoOpeningDealCardIdentity(summary);
+});
+
+test('opening deal summary can be marked not replayable without changing steps', () => {
+    const summary = buildOpeningDealSummary(makeOpeningDealSequence(), {
+        sequenceId: 'opening-room-3-round-1'
+    });
+
+    const notReplayable = markOpeningDealNotReplayable(summary);
+
+    assert.equal(notReplayable.status, 'not_replayable');
+    assert.equal(notReplayable.replayable, false);
+    assert.equal(notReplayable.completed, true);
+    assert.deepEqual(notReplayable.steps, summary.steps);
+});
+
+test('opening deal summary generation stays under visible readiness target', () => {
+    const startedAt = performance.now();
+
+    buildOpeningDealSummary(makeOpeningDealSequence(), {
+        sequenceId: 'opening-room-4-round-1'
+    });
+
+    assert.equal(performance.now() - startedAt < 2000, true);
+});
+
+test('player-visible active state masks removed card and opponent starting hand', () => {
+    const players = [createPlayer('player1'), createPlayer('player2')];
+    const sequence = makeOpeningDealSequence(['player1', 'player2']);
+    sequence.forEach((step) => {
+        const target = players.find((player) => player.id === step.playerId);
+        target.hand.push(step.card);
+    });
+    const removedCard = { id: 'removed-card', geishaId: 1, type: 'secret-item' };
+    const state = {
+        gameId: 'room-visible-1',
+        geishaSet: 'default',
+        phase: 'playing',
+        players,
+        drawPile: [{ id: 'draw-hidden', geishaId: 2, type: 'draw' }],
+        removedCard,
+        openingDeal: buildOpeningDealSummary(sequence),
+        pendingInteraction: null
+    };
+
+    const visible = buildPlayerVisibleGameState(state, 'player1');
+
+    assert.equal(visible.removedCard, null);
+    assert.deepEqual(visible.drawPile, []);
+    assert.equal(visible.players[0].hand[0].id, players[0].hand[0].id);
+    assert.equal(visible.players[1].hand.length, 6);
+    assert.equal(visible.players[1].hand.every((card) => card.type === 'hidden'), true);
+    assert.equal(JSON.stringify(visible).includes('removed-card'), false);
+});
+
+test('player-visible active state redacts stale settlement removed card', () => {
+    const removedCard = { id: 'stale-removed-card', geishaId: 1, type: 'secret-item' };
+    const state = {
+        gameId: 'room-visible-stale-settlement',
+        geishaSet: 'default',
+        phase: 'playing',
+        players: [createPlayer('player1'), createPlayer('player2')],
+        drawPile: [],
+        removedCard,
+        settlement: { removedCard },
+        pendingInteraction: null
+    };
+
+    const visible = buildPlayerVisibleGameState(state, 'player1');
+
+    assert.equal(visible.removedCard, null);
+    assert.equal(visible.settlement, undefined);
+    assert.equal(JSON.stringify(visible).includes('stale-removed-card'), false);
+});
+
+test('player-visible ended state exposes removed card only through settlement', () => {
+    const removedCard = { id: 'removed-card-ended', geishaId: 1, type: 'secret-item' };
+    const state = {
+        gameId: 'room-visible-2',
+        geishaSet: 'default',
+        phase: 'ended',
+        players: [createPlayer('player1'), createPlayer('player2')],
+        drawPile: [],
+        removedCard,
+        settlement: { removedCard },
+        pendingInteraction: null
+    };
+
+    const visible = buildPlayerVisibleGameState(state, 'player1');
+
+    assert.equal(visible.removedCard, null);
+    assert.deepEqual(visible.settlement.removedCard, removedCard);
+});
+
+test('ordered game state preserves existing opening deal and hidden card identities', () => {
+    const baseBoard = createRandomizedGeishas('default', {
+        randomSource: createDeterministicRandomSource([2, 4, 6, 1, 3, 5, 0])
+    });
+    const existingState = createWaitingGameState('room-ordered-opening', ['player1', 'player2'], baseBoard, 'default');
+    existingState.players[0].hand.push({ id: 'p1-card', geishaId: 1, type: 'item' });
+    existingState.players[1].hand.push({ id: 'p2-card', geishaId: 2, type: 'item' });
+    existingState.removedCard = { id: 'removed-card-preserved', geishaId: 3, type: 'item' };
+    existingState.openingDeal = buildOpeningDealSummary(makeOpeningDealSequence(['player1', 'player2']), {
+        sequenceId: 'opening-preserved'
+    });
+
+    const { gameState } = createGameStateWithOrder(
+        'room-ordered-opening',
+        ['player2', 'player1'],
+        baseBoard,
+        existingState
+    );
+
+    assert.equal(gameState.removedCard.id, 'removed-card-preserved');
+    assert.equal(gameState.openingDeal.sequenceId, 'opening-preserved');
+    assert.deepEqual(gameState.players.map((player) => player.id), ['player2', 'player1']);
+    assert.deepEqual(gameState.players.map((player) => player.hand[0].id), ['p2-card', 'p1-card']);
 });
 
 test('invalid Ginza setup data fails fast', () => {
