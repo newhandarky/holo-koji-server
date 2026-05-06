@@ -2,10 +2,7 @@
  * @typedef {import('game-shared-types').Geisha} Geisha
  * @typedef {import('game-shared-types').ItemCard} ItemCard
  */
-import { createRequire } from 'node:module';
-
-const require = createRequire(import.meta.url);
-const { characterProfilesBySet } = require('../../game-shared-types/dist/index.js');
+import { characterProfilesBySet } from './characterProfiles.js';
 
 const DEFAULT_WEB_APP_URL = 'https://newhandarky.github.io/holo-koji';
 const assetBaseUrl = (process.env.WEB_APP_URL || process.env.REACT_APP_WEB_APP_URL || DEFAULT_WEB_APP_URL).replace(/\/$/, '');
