@@ -886,6 +886,20 @@ class GameRoom {
 
     // 根據決定的順序開始遊戲
     startGameWithOrder() {
+        const playerIds = this.players.map(player => player.playerId);
+        const hasConfirmedOrder = playerIds.every(playerId => this.orderDecisionState.confirmations.has(playerId));
+        const hasConfirmedReady = playerIds.every(playerId => this.readyConfirmations.has(playerId));
+
+        if (!this.orderDecisionState.result || !hasConfirmedOrder || !hasConfirmedReady) {
+            backendLogger.warn(`⚠️ 房間 ${this.roomId} 開局條件尚未完成，拒絕提前發牌`, {
+                roomId: this.roomId,
+                hasOrderResult: Boolean(this.orderDecisionState.result),
+                confirmedOrder: Array.from(this.orderDecisionState.confirmations),
+                confirmedReady: Array.from(this.readyConfirmations)
+            });
+            return;
+        }
+
         const { order } = this.orderDecisionState.result;
         if (!this.ensureBaseGeishas()) {
             return;
