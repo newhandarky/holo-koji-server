@@ -1,4 +1,5 @@
 // server/index.js - 添加隨機順序決定功能
+import './utils/localEnv.js';
 import express from 'express';
 import { createServer } from 'http';
 import { WebSocketServer } from 'ws';
@@ -35,6 +36,7 @@ import {
     summarizeWebSocketMessage
 } from './utils/runtimeLogger.js';
 import { accountStore } from './utils/accountStore.js';
+import { resolveVerifiedLineAccountRequest } from './utils/lineIdentity.js';
 
 // NPC 設定（難度與思考時間）
 const NPC_DIFFICULTY_LABEL = {
@@ -2513,7 +2515,10 @@ wss.on('connection', (ws, req) => {
     });
 
     async function handleAccountSync(ws, payload = {}) {
-        const syncResult = await accountStore.syncAccount(payload);
+        const verifiedAccountRequest = await resolveVerifiedLineAccountRequest(payload);
+        const syncResult = verifiedAccountRequest
+            ? await accountStore.syncAccount(verifiedAccountRequest, { trustedIdentity: true })
+            : await accountStore.syncAccount(payload);
         currentAccountProfile = syncResult.status === 'bound' ? syncResult.profile : null;
 
         if (currentRoomId && currentPlayerId && currentAccountProfile) {
