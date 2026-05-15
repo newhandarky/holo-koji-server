@@ -1,5 +1,6 @@
 // server/index.js - 添加隨機順序決定功能
 import './utils/localEnv.js';
+import { randomBytes } from 'node:crypto';
 import express from 'express';
 import { createServer } from 'http';
 import { WebSocketServer } from 'ws';
@@ -35,6 +36,12 @@ import {
     summarizeGameState,
     summarizeWebSocketMessage
 } from './utils/runtimeLogger.js';
+import {
+    buildRestoredRoomSeats,
+    createDisconnectedSocket,
+    createNpcSocket,
+    serializeRoomSeat
+} from './utils/roomSession.js';
 import { accountStore } from './utils/accountStore.js';
 import { resolveVerifiedLineAccountRequest } from './utils/lineIdentity.js';
 
@@ -65,6 +72,14 @@ const LEGACY_GEISHA_SET_ERROR_MESSAGE = '不支援舊版藝妓組合資料，請
 const LEGACY_ROOM_SNAPSHOT_ERROR_MESSAGE = '房間資料無效，請重新建立對戰。';
 const GEISHA_SET_CONFIG_ERROR_MESSAGE = '角色組合資料設定錯誤，請重新建立對戰。';
 const CUSTOM_SELECTION_ERROR_MESSAGE = '自訂角色選擇無效，請重新選擇七位同組合角色。';
+const PLAYER_ID_TAKEN_ERROR_MESSAGE = '此玩家名稱已在房間中使用，請重新加入或更換名稱。';
+
+const createRoomSessionToken = () => randomBytes(24).toString('hex');
+
+const normalizeRoomSessionToken = (token) => (
+    typeof token === 'string' && token.trim() ? token.trim() : null
+);
+
 
 const normalizePlayerMeta = (playerId, payload = {}) => {
     const displayName = typeof payload.displayName === 'string' && payload.displayName.trim()
@@ -191,6 +206,7 @@ class GameRoom {
             createdAt: this.createdAt,
             matchCompletionCounter: this.matchCompletionCounter,
             currentCompletionId: this.currentCompletionId,
+            players: this.players.map(serializeRoomSeat),
             baseGeishas: this.baseGeishas,
             gameState: this.gameState
         };
@@ -218,10 +234,7 @@ class GameRoom {
         const normalized = normalizeNpcDifficulty(difficulty);
         const label = NPC_DIFFICULTY_LABEL[normalized] ?? NPC_DIFFICULTY_LABEL.easy;
         const npcId = `${label}`;
-        const npcSocket = {
-            readyState: 1,
-            send: () => { }
-        };
+        const npcSocket = createNpcSocket();
 
         this.players.push({
             playerId: npcId,
@@ -504,9 +517,17 @@ class GameRoom {
         }
 
         const normalizedMeta = normalizePlayerMeta(playerId, meta);
+        const requestedSessionToken = normalizeRoomSessionToken(meta.roomSessionToken);
         const existingPlayer = this.players.find(player => player.playerId === playerId);
 
         if (existingPlayer) {
+            if (existingPlayer.sessionToken && requestedSessionToken !== existingPlayer.sessionToken) {
+                backendLogger.warn(`⚠️ 玩家 ${playerId} 嘗試以不符 session token 重新加入房間 ${this.roomId}`, {
+                    roomId: this.roomId,
+                    playerId
+                });
+                return 'session-mismatch';
+            }
             existingPlayer.ws = ws;
             if (normalizedMeta.name) {
                 existingPlayer.name = normalizedMeta.name;
@@ -535,6 +556,7 @@ class GameRoom {
         this.players.push({
             playerId,
             ws,
+            sessionToken: requestedSessionToken ?? createRoomSessionToken(),
             name: normalizedMeta.name,
             lineUserId: normalizedMeta.lineUserId,
             avatarUrl: normalizedMeta.avatarUrl,
@@ -558,6 +580,26 @@ class GameRoom {
             playerCount: this.players.length
         });
         this.persistRoomSnapshot();
+    }
+
+    detachPlayerConnection(playerId, ws = null) {
+        const player = this.players.find(p => p.playerId === playerId);
+        if (!player) {
+            return false;
+        }
+
+        if (ws && player.ws !== ws) {
+            return false;
+        }
+
+        player.ws = createDisconnectedSocket();
+        backendLogger.info(`🔌 玩家 ${playerId} 已斷線但保留房間座位`, {
+            roomId: this.roomId,
+            playerId,
+            phase: this.gameState?.phase
+        });
+        this.persistRoomSnapshot();
+        return true;
     }
 
     // 廣播訊息給房間內所有玩家（非狀態同步使用）
@@ -2419,12 +2461,15 @@ const restoreRoomFromSnapshot = (snapshot) => {
     room.baseGeishas = resolvedBoard;
     room.gameState = snapshot.gameState ?? null;
 
+    room.players = buildRestoredRoomSeats(snapshot);
     if (room.npcId) {
-        const npcSocket = {
-            readyState: 1,
-            send: () => { }
-        };
-        room.players.push({ playerId: room.npcId, ws: npcSocket, isNpc: true });
+        const npcSeat = room.players.find((player) => player.playerId === room.npcId);
+        if (npcSeat) {
+            npcSeat.isNpc = true;
+            npcSeat.ws = createNpcSocket();
+        } else {
+            room.players.push({ playerId: room.npcId, ws: createNpcSocket(), isNpc: true, name: room.npcId });
+        }
     }
 
     if (room.gameState) {
@@ -2637,10 +2682,11 @@ wss.on('connection', (ws, req) => {
             ? { characterIds: [...room.customSelection.characterIds] }
             : null;
 
-        room.addPlayer(currentPlayerId, ws, normalizePlayerMeta(currentPlayerId, {
+        room.addPlayer(currentPlayerId, ws, {
             ...payload,
             accountProfile: currentAccountProfile
-        }));
+        });
+        const hostSeat = room.players.find((player) => player.playerId === currentPlayerId);
 
         if (mode === 'npc') {
             room.addNpcPlayer(aiDifficulty);
@@ -2657,7 +2703,11 @@ wss.on('connection', (ws, req) => {
 
         ws.send(JSON.stringify({
             type: 'ROOM_CREATED',
-            payload: { roomId, playerId: currentPlayerId }
+            payload: {
+                roomId,
+                playerId: currentPlayerId,
+                roomSessionToken: hostSeat?.sessionToken
+            }
         }));
 
         const initialGameState = createWaitingGameState(
@@ -2736,10 +2786,19 @@ wss.on('connection', (ws, req) => {
             }));
             return;
         }
-        const result = room.addPlayer(playerId, ws, normalizePlayerMeta(playerId, {
+        const result = room.addPlayer(playerId, ws, {
             ...payload,
+            roomSessionToken: payload.roomSessionToken,
             accountProfile: currentAccountProfile
-        }));
+        });
+
+        if (result === 'session-mismatch') {
+            ws.send(JSON.stringify({
+                type: 'ERROR',
+                payload: { message: PLAYER_ID_TAKEN_ERROR_MESSAGE, code: 'PLAYER_ID_TAKEN' }
+            }));
+            return;
+        }
 
         if (result === 'full') {
             ws.send(JSON.stringify({
@@ -2776,7 +2835,11 @@ wss.on('connection', (ws, req) => {
 
         ws.send(JSON.stringify({
             type: 'PLAYER_JOINED',
-            payload: { playerId, roomId }
+            payload: {
+                playerId,
+                roomId,
+                roomSessionToken: room.players.find((player) => player.playerId === playerId)?.sessionToken
+            }
         }));
 
         const updatedGameState = createWaitingGameState(
@@ -2856,22 +2919,29 @@ wss.on('connection', (ws, req) => {
         if (currentRoomId && currentPlayerId) {
             const room = gameRooms.get(currentRoomId);
             if (room) {
-                room.removePlayer(currentPlayerId);
-                room.broadcast({
-                    type: 'PLAYER_LEFT',
-                    payload: { playerId: currentPlayerId }
-                });
-
-                const hasOnlyNpc = room.players.length === 1 && room.npcId && room.players[0].playerId === room.npcId;
-                if (room.players.length === 0 || hasOnlyNpc) {
-                    gameRooms.delete(currentRoomId);
-                    void deleteRoomSnapshot(currentRoomId);
-                    backendLogger.info(`🗑️ 房間 ${currentRoomId} 已刪除`, {
-                        roomId: currentRoomId
+                const shouldDetachOnly = room.gameState?.phase && room.gameState.phase !== 'waiting';
+                if (shouldDetachOnly) {
+                    room.detachPlayerConnection(currentPlayerId, ws);
+                } else {
+                    room.removePlayer(currentPlayerId);
+                    room.broadcast({
+                        type: 'PLAYER_LEFT',
+                        payload: { playerId: currentPlayerId }
                     });
+
+                    const hasOnlyNpc = room.players.length === 1 && room.npcId && room.players[0].playerId === room.npcId;
+                    if (room.players.length === 0 || hasOnlyNpc) {
+                        gameRooms.delete(currentRoomId);
+                        void deleteRoomSnapshot(currentRoomId);
+                        backendLogger.info(`🗑️ 房間 ${currentRoomId} 已刪除`, {
+                            roomId: currentRoomId
+                        });
+                    }
                 }
             }
         }
+        currentRoomId = null;
+        currentPlayerId = null;
     }
 });
 
