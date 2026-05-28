@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import type { AccountPersistenceStatus } from 'game-shared-types';
+import type { AccountPersistenceStatus, AchievementId, AchievementStatusResult, AchievementSummaryItem } from 'game-shared-types';
 import type { AchievementMatchCompletionRequest, AchievementStore } from './achievementStore.js';
 import {
     ACHIEVEMENT_CATALOG,
@@ -66,7 +66,11 @@ const record = (
     players
 });
 
-const getItem = (summary, achievementId) => summary.items.find((item) => item.achievementId === achievementId);
+const getItem = (summary: AchievementStatusResult, achievementId: AchievementId): AchievementSummaryItem => {
+    const item = summary.items?.find((candidate) => candidate.achievementId === achievementId);
+    assert.ok(item);
+    return item;
+};
 
 test('starter catalog contains exactly the four foundation achievements', () => {
     assert.deepEqual(
@@ -212,7 +216,7 @@ test('available summary includes all four starter achievements', async () => {
     const summary = await store.getAchievementSummary('U_HOST');
 
     assert.equal(summary.status, 'available');
-    assert.equal(summary.items.length, 4);
+    assert.equal(summary.items?.length, 4);
     assert.equal(summary.persistenceStatus.mode, 'durable');
     assert.ok(summary.generatedAt);
 });
@@ -226,7 +230,7 @@ test('acknowledgeNewUnlocks clears unseen marker and returns refreshed summary',
 
     const after = await store.acknowledgeNewUnlocks('U_HOST', ['first_completed_match']);
     assert.equal(after.status, 'available');
-    assert.equal(after.items.length, 4);
+    assert.equal(after.items?.length, 4);
     assert.equal(getItem(after, 'first_completed_match').isNew, false);
     assert.equal(getItem(after, 'first_win').isNew, true);
     assert.equal(after.newUnlockCount, 1);
@@ -236,17 +240,17 @@ test('acknowledgeNewUnlocks clears unseen marker and returns refreshed summary',
 });
 
 test('acknowledgeNewUnlocks reports unavailable when durable storage fails during acknowledgement', async () => {
-    const records = new Map();
+    const records = new Map<string, string>();
     const redisClient = {
         isOpen: true,
         fail: false,
-        async get(key) {
+        async get(key: string) {
             if (this.fail) {
                 throw new Error('redis unavailable');
             }
             return records.get(key) ?? null;
         },
-        async set(key, value) {
+        async set(key: string, value: string) {
             if (this.fail) {
                 throw new Error('redis unavailable');
             }

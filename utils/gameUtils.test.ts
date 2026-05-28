@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import type { CharacterProfile, GameState, Geisha, ItemCard, OpeningDealSummary } from 'game-shared-types';
 import {
     buildDeckForGeishas,
     buildOpeningDealSummary,
@@ -29,14 +30,14 @@ import {
     validateMatchBoardForSet
 } from './gameUtils.js';
 
-const serializeBoard = (geishas) => geishas.map((geisha) => ({
+const serializeBoard = (geishas: Geisha[]) => geishas.map((geisha) => ({
     id: geisha.id,
     characterId: geisha.characterId,
     boardSlotId: geisha.boardSlotId,
     charmPoints: geisha.charmPoints
 }));
 
-const serializeBoardIdentity = (geishas) => geishas.map((geisha) => ({
+const serializeBoardIdentity = (geishas: Geisha[]) => geishas.map((geisha) => ({
     characterId: geisha.characterId,
     boardSlotId: geisha.boardSlotId
 }));
@@ -73,14 +74,14 @@ const incompleteCharacterPool = [
     }
 ];
 
-const assertSevenUniqueBoard = (board, characterPool) => {
+const assertSevenUniqueBoard = (board: Geisha[], characterPool: CharacterProfile[]) => {
     const validCharacterIds = new Set(characterPool.map((character) => character.characterId));
 
     assert.equal(board.length, 7);
     assert.equal(new Set(board.map((geisha) => geisha.characterId)).size, 7);
     assert.equal(new Set(board.map((geisha) => geisha.boardSlotId)).size, 7);
     board.forEach((geisha) => {
-        assert.equal(validCharacterIds.has(geisha.characterId), true);
+        assert.equal(validCharacterIds.has(geisha.characterId ?? ''), true);
         assert.ok(geisha.name);
         assert.ok(geisha.imageUrl);
     });
@@ -106,14 +107,14 @@ const makeOpeningDealSequence = (playerIds = ['player1', 'player2']) => {
         randomSource: createDeterministicRandomSource([7, 6, 5, 4, 3, 2, 1])
     });
     const dealingDeck = [...deck];
-    const sequence = [];
+    const sequence: Array<{ order: number; playerId: string; card: ItemCard }> = [];
 
     for (let round = 0; round < 6; round += 1) {
         playerIds.forEach((playerId) => {
             sequence.push({
                 order: sequence.length,
                 playerId,
-                card: dealingDeck.shift()
+                card: dealingDeck.shift() as ItemCard
             });
         });
     }
@@ -121,7 +122,7 @@ const makeOpeningDealSequence = (playerIds = ['player1', 'player2']) => {
     return sequence;
 };
 
-const assertNoOpeningDealCardIdentity = (summary) => {
+const assertNoOpeningDealCardIdentity = (summary: OpeningDealSummary) => {
     const encoded = JSON.stringify(summary);
     forbiddenOpeningDealFields.forEach((field) => {
         assert.equal(Object.prototype.hasOwnProperty.call(summary, field), false);
@@ -229,6 +230,7 @@ test('opening deal summary can be marked not replayable without changing steps',
 
     const notReplayable = markOpeningDealNotReplayable(summary);
 
+    assert.ok(notReplayable);
     assert.equal(notReplayable.status, 'not_replayable');
     assert.equal(notReplayable.replayable, false);
     assert.equal(notReplayable.completed, true);
@@ -250,6 +252,7 @@ test('player-visible active state masks removed card and opponent starting hand'
     const sequence = makeOpeningDealSequence(['player1', 'player2']);
     sequence.forEach((step) => {
         const target = players.find((player) => player.id === step.playerId);
+        assert.ok(target);
         target.hand.push(step.card);
     });
     const removedCard = { id: 'removed-card', geishaId: 1, type: 'secret-item' };
@@ -262,10 +265,11 @@ test('player-visible active state masks removed card and opponent starting hand'
         removedCard,
         openingDeal: buildOpeningDealSummary(sequence),
         pendingInteraction: null
-    } as Parameters<typeof buildPlayerVisibleGameState>[0];
+    } as unknown as Parameters<typeof buildPlayerVisibleGameState>[0];
 
     const visible = buildPlayerVisibleGameState(state, 'player1');
 
+    assert.ok(visible);
     assert.equal(visible.removedCard, null);
     assert.deepEqual(visible.drawPile, []);
     assert.equal(visible.players[0].hand[0].id, players[0].hand[0].id);
@@ -285,10 +289,11 @@ test('player-visible active state redacts stale settlement removed card', () => 
         removedCard,
         settlement: { removedCard },
         pendingInteraction: null
-    } as Parameters<typeof buildPlayerVisibleGameState>[0];
+    } as unknown as Parameters<typeof buildPlayerVisibleGameState>[0];
 
     const visible = buildPlayerVisibleGameState(state, 'player1');
 
+    assert.ok(visible);
     assert.equal(visible.removedCard, null);
     assert.equal(visible.settlement, undefined);
     assert.equal(JSON.stringify(visible).includes('stale-removed-card'), false);
@@ -305,10 +310,12 @@ test('player-visible ended state exposes removed card only through settlement', 
         removedCard,
         settlement: { removedCard },
         pendingInteraction: null
-    } as Parameters<typeof buildPlayerVisibleGameState>[0];
+    } as unknown as Parameters<typeof buildPlayerVisibleGameState>[0];
 
     const visible = buildPlayerVisibleGameState(state, 'player1');
 
+    assert.ok(visible);
+    assert.ok(visible.settlement);
     assert.equal(visible.removedCard, null);
     assert.deepEqual(visible.settlement.removedCard, removedCard);
 });
@@ -332,8 +339,8 @@ test('ordered game state preserves existing opening deal and hidden card identit
         existingState
     );
 
-    assert.equal(gameState.removedCard.id, 'removed-card-preserved');
-    assert.equal(gameState.openingDeal.sequenceId, 'opening-preserved');
+    assert.equal(gameState.removedCard?.id, 'removed-card-preserved');
+    assert.equal(gameState.openingDeal?.sequenceId, 'opening-preserved');
     assert.deepEqual(gameState.players.map((player) => player.id), ['player2', 'player1']);
     assert.deepEqual(gameState.players.map((player) => player.hand[0].id), ['p2-card', 'p1-card']);
 });
@@ -376,7 +383,7 @@ test('missing room creation set defaults to Ginza without erasing explicit suppo
     const defaultBoard = createRandomizedGeishas(undefined, {
         randomSource: createDeterministicRandomSource([0, 1, 2, 3, 4, 5, 6])
     });
-    assert.equal(defaultBoard.every((geisha) => geisha.characterId.startsWith('ginza-')), true);
+    assert.equal(defaultBoard.every((geisha) => geisha.characterId?.startsWith('ginza-')), true);
 });
 
 test('supported character sets create seven-character boards with fixed board-slot charms', () => {
@@ -393,7 +400,7 @@ test('supported character sets create seven-character boards with fixed board-sl
         assert.deepEqual(board.map((geisha) => geisha.boardSlotId), [1, 2, 3, 4, 5, 6, 7]);
         assert.equal(new Set(board.map((geisha) => geisha.characterId)).size, 7);
         board.forEach((geisha) => {
-            assert.ok(geisha.characterId.startsWith(`${setKey === 'default' ? 'ginza' : setKey}-`));
+            assert.ok(geisha.characterId?.startsWith(`${setKey === 'default' ? 'ginza' : setKey}-`));
             assert.ok(geisha.imageUrl.startsWith('https://'));
         });
     });
@@ -472,7 +479,7 @@ test('custom setup rejects invalid selected IDs without falling back to random b
         /outside the selected set/
     );
     assert.throws(
-        () => validateCustomCharacterSelection('hololive', { characterIds: [...validIds.slice(0, 6), null] }),
+        () => validateCustomCharacterSelection('hololive', { characterIds: [...validIds.slice(0, 6), null] } as unknown as Parameters<typeof validateCustomCharacterSelection>[1]),
         /invalid characterId/
     );
     assert.throws(
@@ -827,6 +834,7 @@ test('deck generation remains bound to board slots for non-default sets', () => 
     assert.equal(allCards.length, 21);
     geishas.forEach((geisha) => {
         const boardSlot = ginzaBoardSlotDefinitions.find((slot) => slot.slotId === geisha.boardSlotId);
+        assert.ok(boardSlot);
         const matchingCards = allCards.filter((card) => card.geishaId === geisha.id);
         assert.equal(matchingCards.length, geisha.charmPoints);
         matchingCards.forEach((card) => {

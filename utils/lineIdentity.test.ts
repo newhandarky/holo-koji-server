@@ -43,6 +43,9 @@ test('resolveVerifiedLineAccountRequest verifies LINE id token and builds truste
 
     const result = await resolveVerifiedLineAccountRequest({ idToken: 'id-token' });
 
+    assert.ok(result);
+    assert.ok(result.verifiedIdentity);
+    assert.ok(result.profile);
     assert.equal(result.verifiedIdentity.provider, 'line');
     assert.equal(result.verifiedIdentity.lineUserId, 'U1234567890');
     assert.equal(result.verifiedIdentity.source, 'line-id-token');
@@ -81,6 +84,9 @@ test('resolveVerifiedLineAccountRequest exchanges authorization code before veri
     });
 
     assert.equal(calls.length, 2);
+    assert.ok(result);
+    assert.ok(result.verifiedIdentity);
+    assert.ok(result.profile);
     assert.equal(result.verifiedIdentity.lineUserId, 'U222');
     assert.equal(result.verifiedIdentity.source, 'line-authorization-code');
     assert.equal(result.profile.displayName, 'Callback Player');

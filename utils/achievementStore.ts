@@ -151,16 +151,16 @@ export const createAchievementStore = ({
             return null;
         }
 
-        client = createClient({ url: redisUrl }) as unknown as KeyValueClient;
-        client.on('error', (error) => {
+        const nextClient = createClient({ url: redisUrl }) as unknown as KeyValueClient;
+        nextClient.on?.('error', (error) => {
             backendLogger.error('❌ Achievement Redis 連線錯誤', {
                 error: error instanceof Error ? error.message : 'unknown'
             });
         });
 
-        if (!client.isOpen) {
+        if (!nextClient.isOpen) {
             try {
-                await client.connect();
+                await nextClient.connect?.();
                 backendLogger.info('✅ Achievement Redis 連線成功');
             } catch (error) {
                 storageFailure = error;
@@ -168,6 +168,7 @@ export const createAchievementStore = ({
                 throw error;
             }
         }
+        client = nextClient;
         return client;
     };
 

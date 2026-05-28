@@ -2,17 +2,21 @@
 import './utils/localEnv.js';
 import { randomBytes } from 'node:crypto';
 import express from 'express';
-import { createServer } from 'http';
-import { WebSocketServer } from 'ws';
+import { createServer, type IncomingMessage } from 'http';
+import { WebSocketServer, type RawData, type WebSocket } from 'ws';
 import cors from 'cors';
 import type {
     AccountSyncRequest,
+    ActionType,
     AchievementAcknowledgeRequest,
+    ClientToServerMessage,
+    CreateRoomPayload,
     CustomCharacterSelection,
     GameState,
     Geisha,
     GeishaSet,
     ItemCard,
+    JoinRoomPayload,
     LineAccountProfile,
     RoomSetupMode
 } from 'game-shared-types';
@@ -85,6 +89,8 @@ type WireMessage = {
 
 type PlayerMetaPayload = {
     displayName?: unknown;
+    lineUserId?: unknown;
+    avatarUrl?: unknown;
     accountProfile?: LineAccountProfile | null;
     roomSessionToken?: unknown;
 };
@@ -126,6 +132,63 @@ type GameRoomPlayer = RoomSeat & {
 };
 
 type ServerGameState = ReturnType<typeof createWaitingGameState>;
+type GamePlayer = ServerGameState['players'][number];
+type GameActionPayload = {
+    type?: unknown;
+    actionType?: unknown;
+    action?: unknown;
+    cards?: unknown;
+    cardIds?: unknown;
+    cardId?: unknown;
+    chosenCardId?: unknown;
+    chosenGroupIndex?: unknown;
+    groups?: unknown;
+};
+type ServerAction = {
+    type: string;
+    payload?: GameActionPayload;
+};
+type CompetitionGroupIds = [string[], string[]] | string[][];
+type NpcSnapshotEntry = { npc: number; opp: number; charm: number };
+type NpcSnapshot = Map<number, NpcSnapshotEntry>;
+type RestorableRoomSnapshot = Parameters<typeof resolveRestorableBoardForSet>[0] & {
+    roomId?: string;
+    hostId?: string | null;
+    npcId?: string | null;
+    npcDifficulty?: NpcDifficulty | null;
+    createdAt?: number;
+    matchCompletionCounter?: unknown;
+    currentCompletionId?: unknown;
+};
+
+type RestoredRoomResult = {
+    room: GameRoom | null;
+    errorMessage: string | null;
+};
+
+const toStringArray = (value: unknown): string[] => (
+    Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string') : []
+);
+
+const toCompetitionGroups = (value: unknown): string[][] => (
+    Array.isArray(value)
+        ? value.map((group) => toStringArray(group)).filter((group) => group.length > 0)
+        : []
+);
+
+const isRecord = (value: unknown): value is JsonObject => (
+    Boolean(value) && typeof value === 'object' && !Array.isArray(value)
+);
+
+const normalizeCustomSelection = (value: unknown): CustomCharacterSelection | null => (
+    isRecord(value) && Array.isArray(value.characterIds)
+        ? { characterIds: value.characterIds.filter((item): item is string => typeof item === 'string') }
+        : null
+);
+
+const getMessagePayload = (message: Partial<ClientToServerMessage> & { payload?: unknown }): unknown => (
+    message.payload
+);
 
 const normalizeNpcDifficulty = (difficulty: unknown): NpcDifficulty => {
     if (difficulty === 'easy' || difficulty === 'medium' || difficulty === 'hard' || difficulty === 'expert' || difficulty === 'hell') {
@@ -283,7 +346,7 @@ class GameRoom {
     }
 
     // 產出可儲存的房間快照（不含連線物件）
-    buildRoomSnapshot() {
+    buildRoomSnapshot(): JsonObject {
         return {
             roomId: this.roomId,
             hostId: this.hostId,
@@ -302,7 +365,7 @@ class GameRoom {
     }
 
     // 儲存房間快照（Redis 可用時）
-    persistRoomSnapshot() {
+    persistRoomSnapshot(): void {
         if (!isRedisEnabled()) {
             return;
         }
@@ -310,12 +373,12 @@ class GameRoom {
     }
 
     // 判斷是否為 NPC 玩家
-    isNpcPlayerId(playerId) {
+    isNpcPlayerId(playerId: string): boolean {
         return Boolean(this.npcId) && playerId === this.npcId;
     }
 
     // 建立 NPC 玩家（使用假連線避免廣播錯誤）
-    addNpcPlayer(difficulty = 'easy') {
+    addNpcPlayer(difficulty: unknown = 'easy'): string | null {
         if (this.npcId || this.players.length >= this.maxPlayers) {
             return null;
         }
@@ -346,7 +409,7 @@ class GameRoom {
     }
 
     getPlayerMetaMap(): Record<string, { name: string; lineUserId?: string; avatarUrl?: string }> {
-        return this.players.reduce((map, player) => {
+        return this.players.reduce<Record<string, { name: string; lineUserId?: string; avatarUrl?: string }>>((map, player) => {
             map[player.playerId] = {
                 name: player.name ?? player.playerId,
                 lineUserId: player.lineUserId,
@@ -357,7 +420,7 @@ class GameRoom {
     }
 
     // 清除 NPC 計時器（避免重複執行）
-    clearNpcTimers() {
+    clearNpcTimers(): void {
         if (this.npcActionTimer) {
             clearTimeout(this.npcActionTimer);
             this.npcActionTimer = null;
@@ -368,11 +431,11 @@ class GameRoom {
         }
     }
 
-    regenerateBaseGeishas() {
+    regenerateBaseGeishas(): boolean {
         try {
             const activeGeishaSet = this.geishaSet ?? DEFAULT_GEISHA_SET;
             this.baseGeishas = this.setupMode === 'custom'
-                ? createCustomSelectedGeishas(activeGeishaSet, this.customSelection)
+                ? createCustomSelectedGeishas(activeGeishaSet, this.customSelection ?? undefined)
                 : createRandomizedGeishas(activeGeishaSet);
             return true;
         } catch (error) {
@@ -387,7 +450,7 @@ class GameRoom {
         }
     }
 
-    ensureBaseGeishas() {
+    ensureBaseGeishas(): boolean {
         if (this.baseGeishas) {
             return true;
         }
@@ -396,7 +459,7 @@ class GameRoom {
     }
 
     // 送出再來一場請求
-    requestRematch(playerId) {
+    requestRematch(playerId: string): void {
         if (!this.validatePlayerInRoom(playerId)) {
             return;
         }
@@ -420,7 +483,7 @@ class GameRoom {
     }
 
     // 開始準備確認流程
-    startReadyCheck() {
+    startReadyCheck(): void {
         if (!this.gameState) {
             return;
         }
@@ -437,15 +500,17 @@ class GameRoom {
         });
 
         if (this.npcId) {
-            const delay = NPC_THINKING_DELAY[this.npcDifficulty] ?? NPC_THINKING_DELAY.easy;
+            const delay = NPC_THINKING_DELAY[this.npcDifficulty ?? 'easy'] ?? NPC_THINKING_DELAY.easy;
             setTimeout(() => {
-                this.confirmReady(this.npcId);
+                if (this.npcId) {
+                    this.confirmReady(this.npcId);
+                }
             }, delay);
         }
     }
 
     // 玩家確認準備完成
-    confirmReady(playerId) {
+    confirmReady(playerId: string): void {
         if (!this.validatePlayerInRoom(playerId)) {
             return;
         }
@@ -557,21 +622,22 @@ class GameRoom {
         });
     }
 
-    sendPendingInteractionState() {
-        if (!this.gameState?.pendingInteraction) {
+    sendPendingInteractionState(): void {
+        const pendingInteraction = this.gameState?.pendingInteraction;
+        if (!pendingInteraction) {
             return;
         }
 
         this.players.forEach((player) => {
             this.sendToPlayer(player.playerId, {
                 type: 'PENDING_INTERACTION',
-                payload: sanitizePendingInteractionForViewer(this.gameState.pendingInteraction, player.playerId)
+                payload: sanitizePendingInteractionForViewer(pendingInteraction, player.playerId)
             });
         });
     }
 
     // 將遊戲狀態整理成玩家可見版本（隱藏對手手牌與密約資訊）
-    buildClientGameState(viewerId: string) {
+    buildClientGameState(viewerId: string): ServerGameState | null {
         if (!this.gameState) {
             return null;
         }
@@ -661,7 +727,7 @@ class GameRoom {
     }
 
     // 從房間移除玩家
-    removePlayer(playerId) {
+    removePlayer(playerId: string): void {
         this.players = this.players.filter(p => p.playerId !== playerId);
         backendLogger.info(`❌ 玩家 ${playerId} 離開房間 ${this.roomId}`, {
             roomId: this.roomId,
@@ -728,7 +794,7 @@ class GameRoom {
     }
 
     // 檢查房間是否已滿員
-    isFull() {
+    isFull(): boolean {
         return this.players.length === this.maxPlayers;
     }
 
@@ -748,12 +814,17 @@ class GameRoom {
             return;
         }
 
+        const baseGeishas = this.baseGeishas;
+        if (!baseGeishas) {
+            return;
+        }
+
         // 以 baseGeishas 為基礎建立本回合藝妓資料
-        const geishasClone = cloneGeishas(this.baseGeishas);
+        const geishasClone = cloneGeishas(baseGeishas);
         const { deck, removedCard } = buildDeckForGeishas(geishasClone);
 
         const dealingDeck = [...deck];
-        const dealSequence = [];
+        const dealSequence: DealSequenceStep[] = [];
         const playerMetaMap = this.getPlayerMetaMap();
         const playersState = playerIds.map((id) => createPlayer(id, playerMetaMap[id]));
 
@@ -769,7 +840,11 @@ class GameRoom {
                     return;
                 }
 
-                playersState[index].hand.push(dealtCard);
+                const targetPlayer = playersState[index];
+                if (!targetPlayer) {
+                    return;
+                }
+                targetPlayer.hand.push(dealtCard);
                 dealSequence.push({
                     order: dealSequence.length,
                     playerId,
@@ -800,13 +875,13 @@ class GameRoom {
                 phase: openOrderDecision ? 'deciding' : 'result',
                 players: playerIds,
                 result: openOrderDecision ? undefined : {
-                    firstPlayer: playerIds[0],
-                    secondPlayer: playerIds[1],
+                    firstPlayer: playerIds[0] ?? '',
+                    secondPlayer: playerIds[1] ?? '',
                     order: playerIds
                 },
                 confirmations: openOrderDecision ? [] : [...playerIds],
                 waitingFor: openOrderDecision ? playerIds : [],
-                currentPlayer: playerIds[0]
+                currentPlayer: playerIds[0] ?? ''
             },
             drawPile: dealingDeck,
             discardPile: [],
@@ -828,7 +903,7 @@ class GameRoom {
     }
 
     // 準備順序決定狀態；真正開局牌務要等雙方確認順序後才建立
-    prepareOrderDecisionState() {
+    prepareOrderDecisionState(): boolean {
         const playerIds = this.players.map(p => p.playerId);
 
         if (playerIds.length < 2) {
@@ -842,11 +917,15 @@ class GameRoom {
         if (!this.ensureBaseGeishas()) {
             return false;
         }
+        const baseGeishas = this.baseGeishas;
+        if (!baseGeishas) {
+            return false;
+        }
 
         const nextState = createWaitingGameState(
             this.roomId,
             playerIds,
-            cloneGeishas(this.baseGeishas),
+            cloneGeishas(baseGeishas),
             this.geishaSet,
             this.getPlayerMetaMap()
         );
@@ -868,7 +947,7 @@ class GameRoom {
     }
 
     // 開始隨機決定順序
-    startOrderDecision() {
+    startOrderDecision(): void {
         backendLogger.info(`🎲 房間 ${this.roomId} 開始隨機決定玩家順序`, {
             roomId: this.roomId
         });
@@ -898,13 +977,13 @@ class GameRoom {
     }
 
     // 決定順序並廣播結果
-    decideOrder() {
+    decideOrder(): void {
         const playerIds = this.players.map(p => p.playerId);
 
         // 隨機決定誰先手
         const firstPlayerIndex = Math.random() < 0.5 ? 0 : 1;
-        const firstPlayer = playerIds[firstPlayerIndex];
-        const secondPlayer = playerIds[1 - firstPlayerIndex];
+        const firstPlayer = playerIds[firstPlayerIndex] ?? '';
+        const secondPlayer = playerIds[1 - firstPlayerIndex] ?? '';
 
         this.orderDecisionState.result = {
             firstPlayer,
@@ -918,15 +997,16 @@ class GameRoom {
             secondPlayer: secondPlayer
         });
 
-        if (this.gameState) {
+        const gameState = this.gameState;
+        if (gameState) {
             const order = this.orderDecisionState.result.order;
-            this.gameState.players = order
-                .map(playerId => this.gameState.players.find(player => player.id === playerId))
-                .filter(Boolean);
+            gameState.players = order
+                .map(playerId => gameState.players.find(player => player.id === playerId))
+                .filter((player): player is GamePlayer => Boolean(player));
 
-            this.gameState.currentPlayer = 0;
-            this.gameState.orderDecision = {
-                ...this.gameState.orderDecision,
+            gameState.currentPlayer = 0;
+            gameState.orderDecision = {
+                ...gameState.orderDecision,
                 phase: 'result',
                 result: this.orderDecisionState.result,
                 confirmations: [],
@@ -946,15 +1026,17 @@ class GameRoom {
 
         // 若有 NPC，順序決定後自動確認
         if (this.npcId) {
-            const delay = NPC_THINKING_DELAY[this.npcDifficulty] ?? NPC_THINKING_DELAY.easy;
+            const delay = NPC_THINKING_DELAY[this.npcDifficulty ?? 'easy'] ?? NPC_THINKING_DELAY.easy;
             setTimeout(() => {
-                this.confirmOrder(this.npcId);
+                if (this.npcId) {
+                    this.confirmOrder(this.npcId);
+                }
             }, delay);
         }
     }
 
     // 處理玩家確認
-    confirmOrder(playerId) {
+    confirmOrder(playerId: string): void {
         // 確認玩家在房間內
         if (!this.validatePlayerInRoom(playerId)) {
             return;
@@ -1018,7 +1100,7 @@ class GameRoom {
     }
 
     // 根據決定的順序開始遊戲
-    startGameWithOrder() {
+    startGameWithOrder(): void {
         const playerIds = this.players.map(player => player.playerId);
         const hasConfirmedOrder = playerIds.every(playerId => this.orderDecisionState.confirmations.has(playerId));
         const hasConfirmedReady = playerIds.every(playerId => this.readyConfirmations.has(playerId));
@@ -1078,7 +1160,7 @@ class GameRoom {
     }
 
     // 傳送指定事件與可見遊戲狀態（避免資料外洩）
-    broadcastGameStateEvent(eventType) {
+    broadcastGameStateEvent(eventType: string): void {
         if (!this.gameState) {
             return;
         }
@@ -1097,12 +1179,12 @@ class GameRoom {
     }
 
     // 廣播可見狀態（標準狀態同步事件）
-    broadcastGameState() {
+    broadcastGameState(): void {
         this.broadcastGameStateEvent('GAME_STATE_UPDATED');
     }
 
     // 取得玩家的遊戲狀態資料
-    getPlayerState(playerId) {
+    getPlayerState(playerId: string): GamePlayer | null {
         if (!this.gameState) {
             return null;
         }
@@ -1111,14 +1193,14 @@ class GameRoom {
     }
 
     // 取得對手玩家 ID
-    getOpponentId(playerId) {
+    getOpponentId(playerId: string): string | null {
         return this.players
             .map(player => player.playerId)
             .find(id => id !== playerId) ?? null;
     }
 
     // 取得對手玩家狀態
-    getOpponentState(playerId) {
+    getOpponentState(playerId: string): GamePlayer | null {
         const opponentId = this.getOpponentId(playerId);
         if (!opponentId) {
             return null;
@@ -1127,7 +1209,7 @@ class GameRoom {
     }
 
     // 標記玩家行動指示物已使用
-    markActionTokenUsed(player, actionType) {
+    markActionTokenUsed(player: GamePlayer, actionType: ActionType): void {
         const token = player.actionTokens.find(item => item.type === actionType);
         if (token) {
             token.used = true;
@@ -1138,7 +1220,7 @@ class GameRoom {
     }
 
     // 抽牌給指定玩家（從牌堆頂端）
-    drawCardForPlayer(player) {
+    drawCardForPlayer(player: GamePlayer): ItemCard | null {
         if (!this.gameState || this.gameState.drawPile.length === 0) {
             return null;
         }
@@ -1151,7 +1233,7 @@ class GameRoom {
     }
 
     // 開始當前玩家回合（抽牌、重置互動狀態）
-    beginTurnForCurrentPlayer() {
+    beginTurnForCurrentPlayer(): void {
         if (!this.gameState) {
             return;
         }
@@ -1205,7 +1287,7 @@ class GameRoom {
     }
 
     // 安排 NPC 行動
-    scheduleNpcTurn() {
+    scheduleNpcTurn(): void {
         if (!this.gameState || !this.npcId) {
             return;
         }
@@ -1219,7 +1301,7 @@ class GameRoom {
             return;
         }
 
-        const delay = NPC_THINKING_DELAY[this.npcDifficulty] ?? NPC_THINKING_DELAY.easy;
+        const delay = NPC_THINKING_DELAY[this.npcDifficulty ?? 'easy'] ?? NPC_THINKING_DELAY.easy;
         if (this.npcActionTimer) {
             clearTimeout(this.npcActionTimer);
         }
@@ -1231,7 +1313,7 @@ class GameRoom {
     }
 
     // 安排 NPC 回應互動（贈予/競爭）
-    scheduleNpcResponse() {
+    scheduleNpcResponse(): void {
         if (!this.gameState || !this.npcId) {
             return;
         }
@@ -1241,7 +1323,7 @@ class GameRoom {
             return;
         }
 
-        const delay = NPC_THINKING_DELAY[this.npcDifficulty] ?? NPC_THINKING_DELAY.easy;
+        const delay = NPC_THINKING_DELAY[this.npcDifficulty ?? 'easy'] ?? NPC_THINKING_DELAY.easy;
         if (this.npcResponseTimer) {
             clearTimeout(this.npcResponseTimer);
         }
@@ -1253,13 +1335,13 @@ class GameRoom {
     }
 
     // 取得藝妓的魅力值
-    getGeishaCharmPoints(geishaId) {
+    getGeishaCharmPoints(geishaId: number): number {
         return this.gameState?.geishas?.find(geisha => geisha.id === geishaId)?.charmPoints ?? 0;
     }
 
     // 建立藝妓計數快照（用於 AI 評估）
-    buildGeishaCountSnapshot(npcPlayer, opponentPlayer) {
-        const snapshot = new Map();
+    buildGeishaCountSnapshot(npcPlayer: GamePlayer, opponentPlayer: GamePlayer): NpcSnapshot {
+        const snapshot: NpcSnapshot = new Map();
         const geishas = this.gameState?.geishas ?? [];
 
         geishas.forEach((geisha) => {
@@ -1276,7 +1358,7 @@ class GameRoom {
     }
 
     // 計算單張卡片對指定玩家的價值（考慮追趕與翻盤）
-    getCardUtility(snapshot, geishaId, isNpc) {
+    getCardUtility(snapshot: NpcSnapshot, geishaId: number, isNpc: boolean): number {
         const entry = snapshot.get(geishaId);
         if (!entry) {
             return 0;
@@ -1298,7 +1380,7 @@ class GameRoom {
     }
 
     // 計算當前分數差（AI 評估用）
-    evaluateSnapshot(snapshot) {
+    evaluateSnapshot(snapshot: NpcSnapshot): number {
         let npcScore = 0;
         let oppScore = 0;
 
@@ -1314,9 +1396,9 @@ class GameRoom {
     }
 
     // 將卡片套用到快照（模擬結果）
-    applyCardsToSnapshot(snapshot, geishaIdList, isNpc) {
-        const next = new Map();
-        snapshot.forEach((value, key) => {
+    applyCardsToSnapshot(snapshot: NpcSnapshot, geishaIdList: number[], isNpc: boolean): NpcSnapshot {
+        const next: NpcSnapshot = new Map();
+        snapshot.forEach((value: NpcSnapshotEntry, key: number) => {
             next.set(key, { ...value });
         });
 
@@ -1336,7 +1418,7 @@ class GameRoom {
     }
 
     // NPC 執行回合行動
-    performNpcAction() {
+    performNpcAction(): void {
         if (!this.gameState || !this.npcId) {
             return;
         }
@@ -1364,7 +1446,7 @@ class GameRoom {
     }
 
     // NPC 回應互動（贈予/競爭）
-    performNpcResponse() {
+    performNpcResponse(): void {
         if (!this.gameState || !this.npcId) {
             return;
         }
@@ -1375,7 +1457,7 @@ class GameRoom {
         }
 
         if (pending.type === 'GIFT_SELECTION') {
-            const card = this.pickNpcGiftCard(pending.offeredCards);
+            const card = this.pickNpcGiftCard(pending.offeredCards ?? []);
             if (card) {
                 this.handleAction(this.npcId, { type: 'RESOLVE_GIFT', payload: { chosenCardId: card.id } });
             }
@@ -1383,7 +1465,7 @@ class GameRoom {
         }
 
         if (pending.type === 'COMPETITION_SELECTION') {
-            const index = this.pickNpcCompetitionGroup(pending.groups);
+            const index = this.pickNpcCompetitionGroup(pending.groups ?? []);
             if (index !== null) {
                 this.handleAction(this.npcId, { type: 'RESOLVE_COMPETITION', payload: { chosenGroupIndex: index } });
             }
@@ -1391,7 +1473,7 @@ class GameRoom {
     }
 
     // NPC 決定要執行的行動與卡片
-    buildNpcAction(player) {
+    buildNpcAction(player: GamePlayer): ServerAction | null {
         const opponent = this.getOpponentState(player.id);
         if (!opponent) {
             return null;
@@ -1412,7 +1494,7 @@ class GameRoom {
             return null;
         }
 
-        const pickRandom = (list) => list[Math.floor(Math.random() * list.length)];
+        const pickRandom = <T>(list: T[]): T | undefined => list[Math.floor(Math.random() * list.length)];
         const snapshot = this.buildGeishaCountSnapshot(player, opponent);
         const sortedByNpcValue = [...player.hand]
             .sort((a, b) => this.getCardUtility(snapshot, a.geishaId, true) - this.getCardUtility(snapshot, b.geishaId, true));
@@ -1437,6 +1519,9 @@ class GameRoom {
             const card = this.npcDifficulty === 'easy'
                 ? pickRandom(player.hand)
                 : sortedByNpcValue[sortedByNpcValue.length - 1];
+            if (!card) {
+                return null;
+            }
             return { type: 'PLAY_SECRET', payload: { cardId: card.id } };
         }
 
@@ -1468,18 +1553,21 @@ class GameRoom {
     }
 
     // 隨機挑選指定數量卡片
-    pickRandomCards(cards, count) {
+    pickRandomCards(cards: ItemCard[], count: number): ItemCard[] {
         const pool = [...cards];
-        const picked = [];
+        const picked: ItemCard[] = [];
         while (pool.length > 0 && picked.length < count) {
             const index = Math.floor(Math.random() * pool.length);
-            picked.push(pool.splice(index, 1)[0]);
+            const [card] = pool.splice(index, 1);
+            if (card) {
+                picked.push(card);
+            }
         }
         return picked;
     }
 
     // 競爭分組策略（盡量平衡）
-    buildNpcCompetitionGroups(cards, npcPlayer, opponent) {
+    buildNpcCompetitionGroups(cards: ItemCard[], npcPlayer: GamePlayer, opponent: GamePlayer): CompetitionGroupIds {
         const snapshot = this.buildGeishaCountSnapshot(npcPlayer, opponent);
         const sorted = [...cards].sort((a, b) => this.getCardValue(b) - this.getCardValue(a));
         if (sorted.length < 4) {
@@ -1489,8 +1577,8 @@ class GameRoom {
             ].filter(group => group.length > 0);
         }
 
-        const groupA = [sorted[0], sorted[3]];
-        const groupB = [sorted[1], sorted[2]];
+        const groupA = [sorted[0], sorted[3]].filter((card): card is ItemCard => Boolean(card));
+        const groupB = [sorted[1], sorted[2]].filter((card): card is ItemCard => Boolean(card));
         const groupOptions = [
             [groupA.map(card => card.id), groupB.map(card => card.id)],
             [[sorted[0], sorted[2]].map(card => card.id), [sorted[1], sorted[3]].map(card => card.id)],
@@ -1505,8 +1593,8 @@ class GameRoom {
 
         groupOptions.forEach((option) => {
             const [g1, g2] = option;
-            const g1Geishas = g1.map(cardId => idToGeisha.get(cardId)).filter(Boolean);
-            const g2Geishas = g2.map(cardId => idToGeisha.get(cardId)).filter(Boolean);
+            const g1Geishas = g1.map(cardId => idToGeisha.get(cardId)).filter((geishaId): geishaId is number => typeof geishaId === 'number');
+            const g2Geishas = g2.map(cardId => idToGeisha.get(cardId)).filter((geishaId): geishaId is number => typeof geishaId === 'number');
             const worst = Math.min(
                 this.evaluateSnapshot(this.applyCardsToSnapshot(snapshot, g1Geishas, false)),
                 this.evaluateSnapshot(this.applyCardsToSnapshot(snapshot, g2Geishas, false))
@@ -1521,7 +1609,7 @@ class GameRoom {
     }
 
     // 競爭分組（隨機）
-    buildNpcRandomGroups(cards) {
+    buildNpcRandomGroups(cards: ItemCard[]): string[][] {
         const pool = [...cards];
         for (let i = pool.length - 1; i > 0; i -= 1) {
             const j = Math.floor(Math.random() * (i + 1));
@@ -1534,7 +1622,7 @@ class GameRoom {
     }
 
     // NPC 回應贈予：挑選價值最高的卡片
-    pickNpcGiftCard(cards) {
+    pickNpcGiftCard(cards: ItemCard[] = []): ItemCard | null {
         if (!cards || cards.length === 0) {
             return null;
         }
@@ -1543,18 +1631,21 @@ class GameRoom {
             return cards[Math.floor(Math.random() * cards.length)];
         }
 
+        if (!this.npcId) {
+            return cards[0] ?? null;
+        }
         const npcPlayer = this.getPlayerState(this.npcId);
         const opponent = this.getOpponentState(this.npcId);
         if (!npcPlayer || !opponent) {
-            return cards[0];
+            return cards[0] ?? null;
         }
         const snapshot = this.buildGeishaCountSnapshot(npcPlayer, opponent);
         return [...cards]
-            .sort((a, b) => this.getCardUtility(snapshot, b.geishaId, true) - this.getCardUtility(snapshot, a.geishaId, true))[0];
+            .sort((a, b) => this.getCardUtility(snapshot, b.geishaId, true) - this.getCardUtility(snapshot, a.geishaId, true))[0] ?? null;
     }
 
     // NPC 回應競爭：挑選總分較高的一組
-    pickNpcCompetitionGroup(groups) {
+    pickNpcCompetitionGroup(groups: ItemCard[][] = []): number | null {
         if (!groups || groups.length !== 2) {
             return null;
         }
@@ -1563,24 +1654,27 @@ class GameRoom {
             return Math.random() < 0.5 ? 0 : 1;
         }
 
+        if (!this.npcId) {
+            return 0;
+        }
         const npcPlayer = this.getPlayerState(this.npcId);
         const opponent = this.getOpponentState(this.npcId);
         if (!npcPlayer || !opponent) {
             return 0;
         }
         const snapshot = this.buildGeishaCountSnapshot(npcPlayer, opponent);
-        const score = (group) => this.evaluateSnapshot(this.applyCardsToSnapshot(snapshot, group.map(card => card.geishaId), true));
+        const score = (group: ItemCard[]) => this.evaluateSnapshot(this.applyCardsToSnapshot(snapshot, group.map(card => card.geishaId), true));
         return score(groups[0]) >= score(groups[1]) ? 0 : 1;
     }
 
     // 專家模式：在可用行動中挑選期望收益最高者
-    pickBestNpcAction(npcPlayer, opponent, candidates) {
+    pickBestNpcAction(npcPlayer: GamePlayer, opponent: GamePlayer, candidates: ActionType[]): ActionType | null {
         if (!candidates || candidates.length === 0) {
             return null;
         }
 
         const snapshot = this.buildGeishaCountSnapshot(npcPlayer, opponent);
-        let bestAction = null;
+        let bestAction: ActionType | null = null;
         let bestScore = -Infinity;
 
         candidates.forEach((actionType) => {
@@ -1595,7 +1689,7 @@ class GameRoom {
     }
 
     // 評估行動的期望收益（越高越好）
-    evaluateNpcAction(npcPlayer, opponent, snapshot, actionType) {
+    evaluateNpcAction(npcPlayer: GamePlayer, opponent: GamePlayer, snapshot: NpcSnapshot, actionType: ActionType): number {
         if (actionType === 'secret') {
             const bestCard = [...npcPlayer.hand]
                 .sort((a, b) => this.getCardUtility(snapshot, b.geishaId, true) - this.getCardUtility(snapshot, a.geishaId, true))[0];
@@ -1636,8 +1730,8 @@ class GameRoom {
             }
             const [groupA, groupB] = this.buildNpcCompetitionGroups(picked, npcPlayer, opponent);
             const idToGeisha = new Map(picked.map(card => [card.id, card.geishaId]));
-            const g1 = groupA.map(cardId => idToGeisha.get(cardId)).filter(Boolean);
-            const g2 = groupB.map(cardId => idToGeisha.get(cardId)).filter(Boolean);
+            const g1 = groupA.map(cardId => idToGeisha.get(cardId)).filter((geishaId): geishaId is number => typeof geishaId === 'number');
+            const g2 = groupB.map(cardId => idToGeisha.get(cardId)).filter((geishaId): geishaId is number => typeof geishaId === 'number');
             const worst = Math.min(
                 this.evaluateSnapshot(this.applyCardsToSnapshot(snapshot, g1, false)),
                 this.evaluateSnapshot(this.applyCardsToSnapshot(snapshot, g2, false))
@@ -1649,7 +1743,7 @@ class GameRoom {
     }
 
     // 競爭挑選卡片（偏強：用評分選出最有利的 4 張）
-    pickCompetitionCards(npcPlayer, opponent) {
+    pickCompetitionCards(npcPlayer: GamePlayer, opponent: GamePlayer): ItemCard[] {
         const snapshot = this.buildGeishaCountSnapshot(npcPlayer, opponent);
         const scored = [...npcPlayer.hand].sort((a, b) => {
             const diff = this.getCardUtility(snapshot, b.geishaId, true) - this.getCardUtility(snapshot, a.geishaId, true);
@@ -1659,7 +1753,7 @@ class GameRoom {
     }
 
     // 贈予挑選卡片（偏強：最大化最差結果）
-    pickGiftCards(npcPlayer, opponent) {
+    pickGiftCards(npcPlayer: GamePlayer, opponent: GamePlayer): ItemCard[] {
         const snapshot = this.buildGeishaCountSnapshot(npcPlayer, opponent);
         const cards = npcPlayer.hand;
         let bestCombo = cards.slice(0, 3);
@@ -1668,7 +1762,7 @@ class GameRoom {
         for (let i = 0; i < cards.length; i += 1) {
             for (let j = i + 1; j < cards.length; j += 1) {
                 for (let k = j + 1; k < cards.length; k += 1) {
-                    const combo = [cards[i], cards[j], cards[k]];
+                    const combo = [cards[i], cards[j], cards[k]].filter((card): card is ItemCard => Boolean(card));
                     const opponentChoices = combo.map(card => card);
 
                     const worst = Math.min(...opponentChoices.map((chosen) => {
@@ -1693,7 +1787,7 @@ class GameRoom {
     }
 
     // 取捨挑選卡片（偏強：犧牲價值最低且可能阻止對手的牌）
-    pickTradeOffCards(npcPlayer, opponent) {
+    pickTradeOffCards(npcPlayer: GamePlayer, opponent: GamePlayer): ItemCard[] {
         const snapshot = this.buildGeishaCountSnapshot(npcPlayer, opponent);
         const sorted = [...npcPlayer.hand].sort((a, b) => {
             const npcValueA = this.getCardUtility(snapshot, a.geishaId, true);
@@ -1710,12 +1804,12 @@ class GameRoom {
     }
 
     // 計算卡片價值（以魅力值為基準）
-    getCardValue(card) {
+    getCardValue(card: ItemCard): number {
         return this.getGeishaCharmPoints(card.geishaId);
     }
 
     // 結束回合並切換到下一位可行動玩家
-    endTurn() {
+    endTurn(): void {
         if (!this.gameState) {
             return;
         }
@@ -1752,7 +1846,7 @@ class GameRoom {
     }
 
     // 結算回合（翻開密約、計算好感、檢查勝利）
-    resolveRound() {
+    resolveRound(): void {
         if (!this.gameState) {
             return;
         }
@@ -1773,14 +1867,21 @@ class GameRoom {
         });
 
         // 比較每位藝妓的卡牌數量，更新好感指示物
-        this.gameState.geishas.forEach((geisha) => {
-            const p1Count = this.countCardsForGeisha(this.gameState.players[0], geisha.id);
-            const p2Count = this.countCardsForGeisha(this.gameState.players[1], geisha.id);
+        const gameState = this.gameState;
+        const firstPlayer = gameState.players[0];
+        const secondPlayer = gameState.players[1];
+        if (!firstPlayer || !secondPlayer) {
+            return;
+        }
+
+        gameState.geishas.forEach((geisha) => {
+            const p1Count = this.countCardsForGeisha(firstPlayer, geisha.id);
+            const p2Count = this.countCardsForGeisha(secondPlayer, geisha.id);
 
             if (p1Count > p2Count) {
-                geisha.controlledBy = this.gameState.players[0].id;
+                geisha.controlledBy = firstPlayer.id;
             } else if (p2Count > p1Count) {
-                geisha.controlledBy = this.gameState.players[1].id;
+                geisha.controlledBy = secondPlayer.id;
             }
             // 平手時保持原狀，不移動好感指示物
         });
@@ -1841,7 +1942,7 @@ class GameRoom {
     }
 
     // 驗證回合發牌與牌堆分配是否正確（用於偵錯與防呆）
-    validateRoundSetup() {
+    validateRoundSetup(): void {
         if (!this.gameState) {
             return;
         }
@@ -1877,10 +1978,10 @@ class GameRoom {
         }
 
         // 檢查是否有重複卡片 ID
-        const cardIds = new Set();
+        const cardIds = new Set<string>();
         let hasDuplicate = false;
 
-        const collect = (card) => {
+        const collect = (card: ItemCard) => {
             if (cardIds.has(card.id)) {
                 hasDuplicate = true;
             }
@@ -1901,30 +2002,34 @@ class GameRoom {
     }
 
     // 統計玩家在特定藝妓上的卡片數量
-    countCardsForGeisha(player, geishaId) {
+    countCardsForGeisha(player: GamePlayer, geishaId: number): number {
         return player.playedCards.filter(card => card.geishaId === geishaId).length;
     }
 
     // 更新每位玩家的魅力值與好感數量
-    updatePlayerScores() {
+    updatePlayerScores(): void {
         if (!this.gameState) {
             return;
         }
 
-        this.gameState.players.forEach((player) => {
-            const controlled = this.gameState.geishas.filter(geisha => geisha.controlledBy === player.id);
+        const gameState = this.gameState;
+        gameState.players.forEach((player) => {
+            const controlled = gameState.geishas.filter(geisha => geisha.controlledBy === player.id);
             player.score.tokens = controlled.length;
             player.score.charm = controlled.reduce((total, geisha) => total + geisha.charmPoints, 0);
         });
     }
 
     // 判定勝利條件（魅力值優先於好感數）
-    determineWinner() {
+    determineWinner(): string | null {
         if (!this.gameState) {
             return null;
         }
 
         const [playerA, playerB] = this.gameState.players;
+        if (!playerA || !playerB) {
+            return null;
+        }
 
         const aCharm = playerA.score.charm;
         const bCharm = playerB.score.charm;
@@ -1946,20 +2051,24 @@ class GameRoom {
     }
 
     // 取得下一輪的起始玩家順序
-    getNextRoundOrder() {
+    getNextRoundOrder(): string[] {
         const currentPlayers = this.gameState?.players ?? [];
         if (currentPlayers.length < 2) {
             return [];
         }
 
-        const currentStarter = this.lastRoundStarterId ?? currentPlayers[0].id;
-        const nextStarter = currentPlayers.find(player => player.id !== currentStarter)?.id ?? currentPlayers[0].id;
+        const firstPlayer = currentPlayers[0];
+        if (!firstPlayer) {
+            return [];
+        }
+        const currentStarter = this.lastRoundStarterId ?? firstPlayer.id;
+        const nextStarter = currentPlayers.find(player => player.id !== currentStarter)?.id ?? firstPlayer.id;
 
         return [nextStarter, currentStarter];
     }
 
     // 開始下一輪（不再重新決定順序，而是輪流先手）
-    startNextRound() {
+    startNextRound(): void {
         if (!this.gameState) {
             return;
         }
@@ -2000,7 +2109,7 @@ class GameRoom {
     }
 
     // 驗證玩家是否存在於房間內
-    validatePlayerInRoom(playerId) {
+    validatePlayerInRoom(playerId: string): boolean {
         if (!this.players.some(player => player.playerId === playerId)) {
             this.sendError(playerId, '玩家不在房間內');
             return false;
@@ -2009,7 +2118,7 @@ class GameRoom {
     }
 
     // 驗證是否輪到該玩家行動
-    validatePlayerTurn(playerId) {
+    validatePlayerTurn(playerId: string): boolean {
         if (!this.gameState) {
             this.sendError(playerId, '遊戲尚未開始');
             return false;
@@ -2024,7 +2133,7 @@ class GameRoom {
     }
 
     // 驗證玩家行動指示物是否可用
-    validateActionAvailable(player, actionType) {
+    validateActionAvailable(player: GamePlayer, actionType: ActionType): boolean {
         const token = player.actionTokens.find(item => item.type === actionType);
         if (!token || token.used) {
             this.sendError(player.id, '該行動已使用或不存在');
@@ -2034,7 +2143,7 @@ class GameRoom {
     }
 
     // 驗證卡片是否屬於玩家
-    validateCardOwnership(player, cardIds) {
+    validateCardOwnership(player: GamePlayer, cardIds: string[]): boolean {
         const uniqueIds = new Set(cardIds);
         if (uniqueIds.size !== cardIds.length) {
             this.sendError(player.id, '卡片選擇重複');
@@ -2053,7 +2162,7 @@ class GameRoom {
     }
 
     // 驗證互動狀態（避免同時進行多個互動）
-    validatePendingInteraction(actionType, playerId) {
+    validatePendingInteraction(actionType: string, playerId: string): boolean {
         const pending = this.gameState?.pendingInteraction;
         const isResolveAction = actionType.startsWith('RESOLVE_');
 
@@ -2071,7 +2180,7 @@ class GameRoom {
     }
 
     // 處理玩家送出的行動（入口）
-    handleAction(playerId, action) {
+    handleAction(playerId: string, action: ServerAction): void {
         if (!this.gameState) {
             backendLogger.warn(`⚠️ 房間 ${this.roomId} 尚未建立遊戲狀態，無法處理行動`, {
                 roomId: this.roomId,
@@ -2110,31 +2219,31 @@ class GameRoom {
                 if (!this.validatePlayerTurn(playerId) || !this.validateActionAvailable(player, 'secret')) {
                     return;
                 }
-                this.handlePlaySecret(player, action.payload?.cardId);
+                this.handlePlaySecret(player, typeof action.payload?.cardId === 'string' ? action.payload.cardId : undefined);
                 break;
             case 'PLAY_TRADE_OFF':
                 if (!this.validatePlayerTurn(playerId) || !this.validateActionAvailable(player, 'trade-off')) {
                     return;
                 }
-                this.handleTradeOff(player, action.payload?.cardIds);
+                this.handleTradeOff(player, toStringArray(action.payload?.cardIds));
                 break;
             case 'INITIATE_GIFT':
                 if (!this.validatePlayerTurn(playerId) || !this.validateActionAvailable(player, 'gift')) {
                     return;
                 }
-                this.handleInitiateGift(player, action.payload?.cardIds);
+                this.handleInitiateGift(player, toStringArray(action.payload?.cardIds));
                 break;
             case 'RESOLVE_GIFT':
-                this.handleResolveGift(playerId, action.payload?.chosenCardId);
+                this.handleResolveGift(playerId, typeof action.payload?.chosenCardId === 'string' ? action.payload.chosenCardId : undefined);
                 break;
             case 'INITIATE_COMPETITION':
                 if (!this.validatePlayerTurn(playerId) || !this.validateActionAvailable(player, 'competition')) {
                     return;
                 }
-                this.handleInitiateCompetition(player, action.payload?.groups);
+                this.handleInitiateCompetition(player, toCompetitionGroups(action.payload?.groups));
                 break;
             case 'RESOLVE_COMPETITION':
-                this.handleResolveCompetition(playerId, action.payload?.chosenGroupIndex);
+                this.handleResolveCompetition(playerId, typeof action.payload?.chosenGroupIndex === 'number' ? action.payload.chosenGroupIndex : undefined);
                 break;
             default:
                 backendLogger.warn('⚠️ 未實作的行動類型', {
@@ -2146,7 +2255,7 @@ class GameRoom {
     }
 
     // 執行密約行動（選 1 張卡蓋牌）
-    handlePlaySecret(player, cardId) {
+    handlePlaySecret(player: GamePlayer, cardId?: string): void {
         if (!cardId) {
             backendLogger.warn('⚠️ PLAY_SECRET 缺少 cardId', {
                 roomId: this.roomId,
@@ -2168,10 +2277,15 @@ class GameRoom {
         }
 
         const [card] = player.hand.splice(cardIndex, 1);
+        if (!card) {
+            return;
+        }
         player.secretCards.push(card);
 
         this.markActionTokenUsed(player, 'secret');
-        this.gameState.lastAction = { playerId: player.id, action: 'secret' };
+        if (this.gameState) {
+            this.gameState.lastAction = { playerId: player.id, action: 'secret' };
+        }
 
         this.players.forEach((recipient) => {
             const shouldReveal = recipient.playerId === player.id;
@@ -2190,7 +2304,7 @@ class GameRoom {
     }
 
     // 執行取捨行動（選 2 張卡丟棄）
-    handleTradeOff(player, cardIds = []) {
+    handleTradeOff(player: GamePlayer, cardIds: string[] = []): void {
         if (!Array.isArray(cardIds) || cardIds.length !== 2) {
             backendLogger.warn('⚠️ PLAY_TRADE_OFF 需要 2 張卡片', {
                 roomId: this.roomId,
@@ -2204,12 +2318,15 @@ class GameRoom {
             return;
         }
 
-        const collected = [];
+        const collected: ItemCard[] = [];
 
         cardIds.forEach(cardId => {
             const index = player.hand.findIndex(card => card.id === cardId);
             if (index !== -1) {
-                collected.push(player.hand.splice(index, 1)[0]);
+                const [card] = player.hand.splice(index, 1);
+                if (card) {
+                    collected.push(card);
+                }
             }
         });
 
@@ -2226,7 +2343,9 @@ class GameRoom {
         player.discardedCards.push(...collected);
 
         this.markActionTokenUsed(player, 'trade-off');
-        this.gameState.lastAction = { playerId: player.id, action: 'trade-off' };
+        if (this.gameState) {
+            this.gameState.lastAction = { playerId: player.id, action: 'trade-off' };
+        }
 
         this.players.forEach((recipient) => {
             const shouldReveal = recipient.playerId === player.id;
@@ -2245,7 +2364,7 @@ class GameRoom {
     }
 
     // 執行贈予行動（選 3 張卡給對手挑）
-    handleInitiateGift(player, cardIds = []) {
+    handleInitiateGift(player: GamePlayer, cardIds: string[] = []): void {
         if (!Array.isArray(cardIds) || cardIds.length !== 3) {
             backendLogger.warn('⚠️ INITIATE_GIFT 需要 3 張卡片', {
                 roomId: this.roomId,
@@ -2269,11 +2388,14 @@ class GameRoom {
             return;
         }
 
-        const offeredCards = [];
+        const offeredCards: ItemCard[] = [];
         cardIds.forEach(cardId => {
             const index = player.hand.findIndex(card => card.id === cardId);
             if (index !== -1) {
-                offeredCards.push(player.hand.splice(index, 1)[0]);
+                const [card] = player.hand.splice(index, 1);
+                if (card) {
+                    offeredCards.push(card);
+                }
             }
         });
 
@@ -2288,6 +2410,9 @@ class GameRoom {
         }
 
         this.markActionTokenUsed(player, 'gift');
+        if (!this.gameState) {
+            return;
+        }
         this.gameState.pendingInteraction = {
             type: 'GIFT_SELECTION',
             initiatorId: player.id,
@@ -2308,7 +2433,7 @@ class GameRoom {
     }
 
     // 處理對手回應贈予（選 1 張卡）
-    handleResolveGift(playerId, chosenCardId) {
+    handleResolveGift(playerId: string, chosenCardId?: string): void {
         const pending = this.gameState?.pendingInteraction;
 
         if (!pending || pending.type !== 'GIFT_SELECTION') {
@@ -2329,7 +2454,8 @@ class GameRoom {
             return;
         }
 
-        const chosenCard = pending.offeredCards.find(card => card.id === chosenCardId);
+        const offeredCards = pending.offeredCards ?? [];
+        const chosenCard = offeredCards.find(card => card.id === chosenCardId);
         if (!chosenCard) {
             backendLogger.warn('⚠️ RESOLVE_GIFT 選擇的卡片不存在', {
                 roomId: this.roomId,
@@ -2354,10 +2480,12 @@ class GameRoom {
         // 贈予結果：卡片直接加入各自的藝妓區（以 playedCards 代表）
         receiver.playedCards.push(chosenCard);
 
-        const remaining = pending.offeredCards.filter(card => card.id !== chosenCardId);
+        const remaining = offeredCards.filter(card => card.id !== chosenCardId);
         opponent.playedCards.push(...remaining);
 
-        this.gameState.pendingInteraction = null;
+        if (this.gameState) {
+            this.gameState.pendingInteraction = null;
+        }
 
         this.broadcast({
             type: 'INTERACTION_RESOLVED',
@@ -2374,7 +2502,7 @@ class GameRoom {
     }
 
     // 執行競爭行動（選 4 張卡分 2 組）
-    handleInitiateCompetition(player, groups = []) {
+    handleInitiateCompetition(player: GamePlayer, groups: string[][] = []): void {
         if (!Array.isArray(groups) || groups.length !== 2 || groups.some(group => group.length !== 2)) {
             backendLogger.warn('⚠️ INITIATE_COMPETITION 需要分成兩組且每組 2 張', {
                 roomId: this.roomId,
@@ -2399,12 +2527,15 @@ class GameRoom {
         if (!this.validateCardOwnership(player, flattened)) {
             return;
         }
-        const extractedCards = [];
+        const extractedCards: ItemCard[] = [];
 
         flattened.forEach(cardId => {
             const index = player.hand.findIndex(card => card.id === cardId);
             if (index !== -1) {
-                extractedCards.push(player.hand.splice(index, 1)[0]);
+                const [card] = player.hand.splice(index, 1);
+                if (card) {
+                    extractedCards.push(card);
+                }
             }
         });
 
@@ -2419,7 +2550,9 @@ class GameRoom {
         }
 
         // 根據原分組恢復卡片資料
-        const groupedCards = groups.map(group => group.map(cardId => extractedCards.find(card => card.id === cardId)).filter(Boolean));
+        const groupedCards = groups.map(group => group
+            .map(cardId => extractedCards.find(card => card.id === cardId))
+            .filter((card): card is ItemCard => Boolean(card)));
 
         if (groupedCards.some(group => group.length !== 2)) {
             backendLogger.warn('⚠️ INITIATE_COMPETITION 組別卡片無法匹配', {
@@ -2432,6 +2565,9 @@ class GameRoom {
         }
 
         this.markActionTokenUsed(player, 'competition');
+        if (!this.gameState) {
+            return;
+        }
         this.gameState.pendingInteraction = {
             type: 'COMPETITION_SELECTION',
             initiatorId: player.id,
@@ -2452,7 +2588,7 @@ class GameRoom {
     }
 
     // 處理對手回應競爭（選 1 組）
-    handleResolveCompetition(playerId, chosenGroupIndex) {
+    handleResolveCompetition(playerId: string, chosenGroupIndex?: number): void {
         const pending = this.gameState?.pendingInteraction;
 
         if (!pending || pending.type !== 'COMPETITION_SELECTION') {
@@ -2473,7 +2609,8 @@ class GameRoom {
             return;
         }
 
-        const selectedGroup = pending.groups[chosenGroupIndex];
+        const groups = pending.groups ?? [];
+        const selectedGroup = typeof chosenGroupIndex === 'number' ? groups[chosenGroupIndex] : undefined;
         if (!selectedGroup) {
             backendLogger.warn('⚠️ RESOLVE_COMPETITION 選擇的組別不存在', {
                 roomId: this.roomId,
@@ -2484,7 +2621,7 @@ class GameRoom {
         }
 
         const opponentGroupIndex = chosenGroupIndex === 0 ? 1 : 0;
-        const opponentGroup = pending.groups[opponentGroupIndex];
+        const opponentGroup = groups[opponentGroupIndex] ?? [];
 
         const initiator = this.getPlayerState(pending.initiatorId);
         const receiver = this.getPlayerState(playerId);
@@ -2502,7 +2639,9 @@ class GameRoom {
         receiver.playedCards.push(...selectedGroup);
         initiator.playedCards.push(...opponentGroup);
 
-        this.gameState.pendingInteraction = null;
+        if (this.gameState) {
+            this.gameState.pendingInteraction = null;
+        }
 
         this.broadcast({
             type: 'INTERACTION_RESOLVED',
@@ -2520,13 +2659,13 @@ class GameRoom {
 }
 
 // 由 Redis 快照還原房間（只重建必要狀態）
-const restoreRoomFromSnapshot = (snapshot) => {
+const restoreRoomFromSnapshot = (snapshot: RestorableRoomSnapshot | null): RestoredRoomResult => {
     if (!snapshot?.roomId) {
         return { room: null, errorMessage: LEGACY_ROOM_SNAPSHOT_ERROR_MESSAGE };
     }
 
     let snapshotGeishaSet: GeishaSet = DEFAULT_GEISHA_SET;
-    let resolvedBoard = null;
+    let resolvedBoard: Geisha[] | null = null;
     try {
         snapshotGeishaSet = resolveRestorableGeishaSet(snapshot) as GeishaSet;
         resolvedBoard = resolveRestorableBoardForSet(snapshot, snapshotGeishaSet);
@@ -2538,22 +2677,25 @@ const restoreRoomFromSnapshot = (snapshot) => {
     room.hostId = snapshot.hostId ?? null;
     room.geishaSet = snapshotGeishaSet;
     room.setupMode = normalizeRoomSetupMode(snapshot.setupMode ?? snapshot.gameState?.setupMode);
+    const restoredCustomSelection = normalizeCustomSelection(snapshot.customSelection ?? snapshot.gameState?.customSelection);
     room.customSelection = room.setupMode === 'custom'
-        ? { characterIds: [...(snapshot.customSelection ?? snapshot.gameState?.customSelection).characterIds] }
+        ? restoredCustomSelection
         : null;
     room.npcId = snapshot.npcId ?? null;
     room.npcDifficulty = snapshot.npcDifficulty ?? null;
-    room.createdAt = snapshot.createdAt ?? Date.now();
-    room.matchCompletionCounter = Number.isSafeInteger(snapshot.matchCompletionCounter)
+    room.createdAt = typeof snapshot.createdAt === 'number' && Number.isSafeInteger(snapshot.createdAt)
+        ? snapshot.createdAt
+        : Date.now();
+    room.matchCompletionCounter = typeof snapshot.matchCompletionCounter === 'number' && Number.isSafeInteger(snapshot.matchCompletionCounter)
         ? snapshot.matchCompletionCounter
         : 0;
     room.currentCompletionId = typeof snapshot.currentCompletionId === 'string'
         ? snapshot.currentCompletionId
         : null;
     room.baseGeishas = resolvedBoard;
-    room.gameState = snapshot.gameState ?? null;
+    room.gameState = snapshot.gameState as ServerGameState | null ?? null;
 
-    room.players = buildRestoredRoomSeats(snapshot);
+    room.players = buildRestoredRoomSeats(snapshot as Parameters<typeof buildRestoredRoomSeats>[0]);
     if (room.npcId) {
         const npcSeat = room.players.find((player) => player.playerId === room.npcId);
         if (npcSeat) {
@@ -2572,20 +2714,20 @@ const restoreRoomFromSnapshot = (snapshot) => {
 };
 
 // WebSocket 連線入口（處理玩家進出與訊息）
-wss.on('connection', (ws, req) => {
+wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
     const origin = req.headers.origin;
     backendLogger.info('🔌 客戶端已連接', {
         origin: typeof origin === 'string' ? origin : 'unknown'
     });
 
-    let currentPlayerId = null;
-    let currentRoomId = null;
-    let currentAccountProfile = null;
+    let currentPlayerId: string | null = null;
+    let currentRoomId: string | null = null;
+    let currentAccountProfile: LineAccountProfile | null = null;
 
     // 監聽客戶端訊息
-    ws.on('message', async (data) => {
+    ws.on('message', async (data: RawData) => {
         try {
-            const message = JSON.parse(data.toString());
+            const message = JSON.parse(data.toString()) as Partial<ClientToServerMessage> & { type?: unknown; payload?: unknown };
             backendLogger.diagnostic('🐞 [Server] 收到訊息摘要', {
                 origin: typeof origin === 'string' ? origin : 'unknown',
                 ...summarizeWebSocketMessage(message)
@@ -2593,7 +2735,7 @@ wss.on('connection', (ws, req) => {
 
             switch (message.type) {
                 case 'ACCOUNT_SYNC':
-                    await handleAccountSync(ws, message.payload);
+                    await handleAccountSync(ws, getMessagePayload(message));
                     break;
                 case 'ACCOUNT_STATUS':
                     await handleAccountStatus(ws);
@@ -2602,25 +2744,25 @@ wss.on('connection', (ws, req) => {
                     await handleAchievementStatus(ws);
                     break;
                 case 'ACHIEVEMENT_ACK_NEW_UNLOCKS':
-                    await handleAchievementAckNewUnlocks(ws, message.payload);
+                    await handleAchievementAckNewUnlocks(ws, getMessagePayload(message));
                     break;
                 case 'JOIN_ROOM':
-                    await handleJoinRoom(ws, message.payload);
+                    await handleJoinRoom(ws, getMessagePayload(message));
                     break;
                 case 'CREATE_ROOM':
-                    await handleCreateRoom(ws, message.payload);
+                    await handleCreateRoom(ws, getMessagePayload(message));
                     break;
                 case 'CONFIRM_ORDER':
-                    handleConfirmOrder(ws, message.payload);
+                    handleConfirmOrder(ws);
                     break;
                 case 'GAME_ACTION':
-                    handleGameAction(ws, message.payload);
+                    handleGameAction(ws, getMessagePayload(message));
                     break;
                 case 'READY_CONFIRM':
-                    handleReadyConfirm(ws, message.payload);
+                    handleReadyConfirm(ws);
                     break;
                 case 'REMATCH_REQUEST':
-                    handleRematchRequest(ws, message.payload);
+                    handleRematchRequest(ws);
                     break;
                 case 'LEAVE_ROOM':
                     handleLeaveRoom(ws);
@@ -2651,17 +2793,18 @@ wss.on('connection', (ws, req) => {
         });
     });
 
-    async function handleAccountSync(ws, payload = {}) {
-        const verifiedAccountRequest = await resolveVerifiedLineAccountRequest(payload);
+    async function handleAccountSync(ws: WebSocket, payload: unknown = {}) {
+        const accountSyncRequest = isRecord(payload) ? payload as AccountSyncRequest : {};
+        const verifiedAccountRequest = await resolveVerifiedLineAccountRequest(accountSyncRequest);
         const syncResult = verifiedAccountRequest
             ? await accountStore.syncAccount(verifiedAccountRequest, { trustedIdentity: true })
-            : await accountStore.syncAccount(payload);
-        currentAccountProfile = syncResult.status === 'bound' ? syncResult.profile : null;
+            : await accountStore.syncAccount(accountSyncRequest);
+        currentAccountProfile = syncResult.status === 'bound' && syncResult.profile ? syncResult.profile : null;
 
         if (currentRoomId && currentPlayerId && currentAccountProfile) {
             const room = gameRooms.get(currentRoomId);
             const player = room?.players.find((item) => item.playerId === currentPlayerId);
-            if (player) {
+            if (room && player) {
                 player.accountProfile = currentAccountProfile;
                 player.lineUserId = currentAccountProfile.lineUserId;
                 player.avatarUrl = currentAccountProfile.avatarUrl;
@@ -2683,7 +2826,7 @@ wss.on('connection', (ws, req) => {
         }));
     }
 
-    async function handleAccountStatus(ws) {
+    async function handleAccountStatus(ws: WebSocket) {
         const persistenceStatus = await accountStore.checkPersistenceStatus();
         ws.send(JSON.stringify({
             type: 'ACCOUNT_SYNC_RESULT',
@@ -2695,7 +2838,7 @@ wss.on('connection', (ws, req) => {
         }));
     }
 
-    async function handleAchievementStatus(ws) {
+    async function handleAchievementStatus(ws: WebSocket) {
         const summary = await accountStore.getAchievementSummary(currentAccountProfile?.lineUserId);
         ws.send(JSON.stringify({
             type: 'ACHIEVEMENT_STATUS_RESULT',
@@ -2703,9 +2846,10 @@ wss.on('connection', (ws, req) => {
         }));
     }
 
-    async function handleAchievementAckNewUnlocks(ws, payload: AchievementAcknowledgeRequest = {}) {
-        const achievementIds = Array.isArray(payload?.achievementIds)
-            ? payload.achievementIds
+    async function handleAchievementAckNewUnlocks(ws: WebSocket, payload: unknown = {}) {
+        const achievementRequest = isRecord(payload) ? payload as AchievementAcknowledgeRequest : {};
+        const achievementIds = Array.isArray(achievementRequest.achievementIds)
+            ? achievementRequest.achievementIds
             : [];
         const summary = await accountStore.acknowledgeNewUnlocks(
             currentAccountProfile?.lineUserId,
@@ -2718,18 +2862,19 @@ wss.on('connection', (ws, req) => {
     }
 
     // 建立房間流程（含基本參數驗證）
-    async function handleCreateRoom(ws, payload) {
-        if (!payload?.playerId) {
+    async function handleCreateRoom(ws: WebSocket, payload: unknown) {
+        if (!isRecord(payload) || typeof payload.playerId !== 'string' || !payload.playerId) {
             ws.send(JSON.stringify({
                 type: 'ERROR',
                 payload: { message: '缺少 playerId' }
             }));
             return;
         }
+        const createPayload = payload as Partial<CreateRoomPayload> & PlayerMetaPayload;
 
-        const mode = payload.mode === 'npc' ? 'npc' : 'online';
-        const aiDifficulty = normalizeNpcDifficulty(payload.aiDifficulty ?? 'easy');
-        const requestedGeishaSet = normalizeGeishaSet(payload.geishaSet);
+        const mode = createPayload.mode === 'npc' ? 'npc' : 'online';
+        const aiDifficulty = normalizeNpcDifficulty(createPayload.aiDifficulty ?? 'easy');
+        const requestedGeishaSet = normalizeGeishaSet(createPayload.geishaSet);
         let setupMode = DEFAULT_ROOM_SETUP_MODE;
         if (!isSupportedGeishaSet(requestedGeishaSet)) {
             ws.send(JSON.stringify({
@@ -2739,7 +2884,7 @@ wss.on('connection', (ws, req) => {
             return;
         }
         try {
-            setupMode = normalizeRoomSetupMode(payload.setupMode);
+            setupMode = normalizeRoomSetupMode(createPayload.setupMode);
         } catch (_error) {
             ws.send(JSON.stringify({
                 type: 'ERROR',
@@ -2758,7 +2903,7 @@ wss.on('connection', (ws, req) => {
         room.geishaSet = requestedGeishaSet as GeishaSet;
         room.setupMode = setupMode;
         room.customSelection = setupMode === 'custom'
-            ? payload.customSelection
+            ? normalizeCustomSelection(createPayload.customSelection)
             : null;
         if (!room.regenerateBaseGeishas()) {
             gameRooms.delete(roomId);
@@ -2771,11 +2916,21 @@ wss.on('connection', (ws, req) => {
             return;
         }
         room.customSelection = setupMode === 'custom'
-            ? { characterIds: [...room.customSelection.characterIds] }
+            ? normalizeCustomSelection(room.customSelection)
             : null;
+        if (setupMode === 'custom' && !room.customSelection) {
+            gameRooms.delete(roomId);
+            currentRoomId = null;
+            currentPlayerId = null;
+            ws.send(JSON.stringify({
+                type: 'ERROR',
+                payload: { message: CUSTOM_SELECTION_ERROR_MESSAGE }
+            }));
+            return;
+        }
 
         room.addPlayer(currentPlayerId, ws, {
-            ...payload,
+            ...createPayload,
             accountProfile: currentAccountProfile
         });
         const hostSeat = room.players.find((player) => player.playerId === currentPlayerId);
@@ -2802,10 +2957,18 @@ wss.on('connection', (ws, req) => {
             }
         }));
 
+        const baseGeishas = room.baseGeishas;
+        if (!baseGeishas) {
+            ws.send(JSON.stringify({
+                type: 'ERROR',
+                payload: { message: GEISHA_SET_CONFIG_ERROR_MESSAGE }
+            }));
+            return;
+        }
         const initialGameState = createWaitingGameState(
             roomId,
             room.players.map(p => p.playerId),
-            room.baseGeishas,
+            baseGeishas,
             room.geishaSet,
             room.getPlayerMetaMap()
         );
@@ -2827,8 +2990,8 @@ wss.on('connection', (ws, req) => {
     }
 
     // 加入房間流程（含房間與參數驗證）
-    async function handleJoinRoom(ws, payload) {
-        if (!payload?.roomId || !payload?.playerId) {
+    async function handleJoinRoom(ws: WebSocket, payload: unknown) {
+        if (!isRecord(payload) || typeof payload.roomId !== 'string' || typeof payload.playerId !== 'string' || !payload.roomId || !payload.playerId) {
             ws.send(JSON.stringify({
                 type: 'ERROR',
                 payload: { message: '缺少 roomId 或 playerId', code: 'INVALID_JOIN_REQUEST' }
@@ -2836,14 +2999,15 @@ wss.on('connection', (ws, req) => {
             return;
         }
 
+        const joinPayload = payload as Partial<JoinRoomPayload> & PlayerMetaPayload;
         const { roomId, playerId } = payload;
         let room = gameRooms.get(roomId);
 
         if (!room) {
-            const snapshot = await loadRoomSnapshot(roomId);
+            const snapshot = await loadRoomSnapshot<RestorableRoomSnapshot>(roomId);
             if (snapshot) {
                 const restoreResult = restoreRoomFromSnapshot(snapshot);
-                room = restoreResult.room;
+                room = restoreResult.room ?? undefined;
                 if (room) {
                     gameRooms.set(roomId, room);
                 } else if (restoreResult.errorMessage) {
@@ -2879,8 +3043,8 @@ wss.on('connection', (ws, req) => {
             return;
         }
         const result = room.addPlayer(playerId, ws, {
-            ...payload,
-            roomSessionToken: payload.roomSessionToken,
+            ...joinPayload,
+            roomSessionToken: joinPayload.roomSessionToken,
             accountProfile: currentAccountProfile
         });
 
@@ -2934,10 +3098,18 @@ wss.on('connection', (ws, req) => {
             }
         }));
 
+        const baseGeishas = room.baseGeishas;
+        if (!baseGeishas) {
+            ws.send(JSON.stringify({
+                type: 'ERROR',
+                payload: { message: GEISHA_SET_CONFIG_ERROR_MESSAGE, code: 'ROOM_CONFIG_INVALID' }
+            }));
+            return;
+        }
         const updatedGameState = createWaitingGameState(
             roomId,
             room.players.map(p => p.playerId),
-            room.baseGeishas,
+            baseGeishas,
             room.geishaSet,
             room.getPlayerMetaMap()
         );
@@ -2959,7 +3131,10 @@ wss.on('connection', (ws, req) => {
     }
 
     // 玩家確認順序（等待雙方確認後開始遊戲）
-    function handleConfirmOrder(ws, payload) {
+    function handleConfirmOrder(_ws: WebSocket) {
+        if (!currentRoomId || !currentPlayerId) {
+            return;
+        }
         const room = gameRooms.get(currentRoomId);
         if (!room || !currentPlayerId) {
             return;
@@ -2968,13 +3143,16 @@ wss.on('connection', (ws, req) => {
     }
 
     // 處理遊戲行動（含基本驗證）
-    function handleGameAction(ws, payload) {
+    function handleGameAction(_ws: WebSocket, payload: unknown) {
+        if (!currentRoomId || !currentPlayerId) {
+            return;
+        }
         const room = gameRooms.get(currentRoomId);
-        if (!room || !currentPlayerId) {
+        if (!room) {
             return;
         }
 
-        if (!payload || !payload.action || !payload.action.type) {
+        if (!isRecord(payload) || !isRecord(payload.action) || typeof payload.action.type !== 'string') {
             backendLogger.warn('⚠️ GAME_ACTION 缺少 action 內容', {
                 roomId: currentRoomId ?? undefined,
                 playerId: currentPlayerId ?? undefined
@@ -2983,13 +3161,22 @@ wss.on('connection', (ws, req) => {
             return;
         }
 
-        room.handleAction(currentPlayerId, payload.action);
+        const actionPayload = isRecord(payload.action.payload)
+            ? payload.action.payload as GameActionPayload
+            : undefined;
+        room.handleAction(currentPlayerId, {
+            type: payload.action.type,
+            ...(actionPayload ? { payload: actionPayload } : {})
+        });
     }
 
     // 玩家準備確認
-    function handleReadyConfirm(ws, payload) {
+    function handleReadyConfirm(_ws: WebSocket) {
+        if (!currentRoomId || !currentPlayerId) {
+            return;
+        }
         const room = gameRooms.get(currentRoomId);
-        if (!room || !currentPlayerId) {
+        if (!room) {
             return;
         }
 
@@ -2997,9 +3184,12 @@ wss.on('connection', (ws, req) => {
     }
 
     // 再來一場請求
-    function handleRematchRequest(ws, payload) {
+    function handleRematchRequest(_ws: WebSocket) {
+        if (!currentRoomId || !currentPlayerId) {
+            return;
+        }
         const room = gameRooms.get(currentRoomId);
-        if (!room || !currentPlayerId) {
+        if (!room) {
             return;
         }
 
@@ -3007,7 +3197,7 @@ wss.on('connection', (ws, req) => {
     }
 
     // 玩家離開房間（斷線或主動退出）
-    function handleLeaveRoom(ws) {
+    function handleLeaveRoom(ws: WebSocket) {
         if (currentRoomId && currentPlayerId) {
             const room = gameRooms.get(currentRoomId);
             if (room) {
@@ -3038,7 +3228,7 @@ wss.on('connection', (ws, req) => {
 });
 
 // 建立遮蔽卡片（避免洩漏對手手牌資訊）
-function createMaskedCard(prefix, index) {
+function createMaskedCard(prefix: string, index: number): ItemCard {
     return {
         id: `hidden-${prefix}-${index}`,
         geishaId: 0,
@@ -3047,7 +3237,7 @@ function createMaskedCard(prefix, index) {
 }
 
 // 依指定長度建立遮蔽卡片陣列
-function createMaskedCards(count, prefix) {
+function createMaskedCards(count: number, prefix: string): ItemCard[] {
     return Array.from({ length: count }, (_, index) => createMaskedCard(prefix, index));
 }
 

@@ -227,7 +227,7 @@ test('summarizeGameState reports account persistence only', () => {
 test('backend diagnostics remain opt-in', async () => {
     const originalFlag = process.env.GAME_DIAGNOSTICS;
     const originalDebug = console.debug;
-    const calls = [];
+    const calls: unknown[][] = [];
     console.debug = (...args) => calls.push(args);
 
     try {

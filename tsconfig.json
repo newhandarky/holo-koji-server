@@ -6,8 +6,6 @@
     "rootDir": ".",
     "outDir": "dist",
     "strict": true,
-    "noImplicitAny": false,
-    "strictNullChecks": false,
     "allowJs": false,
     "checkJs": false,
     "esModuleInterop": true,

@@ -63,6 +63,11 @@ interface AccountCounterUpdateRequest {
     completedAt?: string;
 }
 
+interface NormalizedAccountProfileInput {
+    displayName: string;
+    avatarUrl?: string;
+}
+
 interface AccountMatchCompletionResult {
     accountProfiles: LineAccountProfile[];
     achievements: AchievementMatchCompletionResult;
@@ -131,7 +136,7 @@ export const validateVerifiedLineIdentity = (verifiedIdentity: unknown): Verifie
 const normalizeProfileInput = (
     profile: AccountSyncRequest['profile'] = {},
     fallbackDisplayName = ''
-): AccountSyncRequest['profile'] | null => {
+): NormalizedAccountProfileInput | null => {
     const displayName = sanitizeString(profile?.displayName) ?? sanitizeString(fallbackDisplayName);
     if (!displayName) {
         return null;
@@ -222,16 +227,16 @@ export const createAccountStore = ({
             return null;
         }
 
-        client = createClient({ url: redisUrl }) as unknown as KeyValueClient;
-        client.on('error', (error) => {
+        const nextClient = createClient({ url: redisUrl }) as unknown as KeyValueClient;
+        nextClient.on?.('error', (error) => {
             backendLogger.error('❌ Account Redis 連線錯誤', {
                 error: error instanceof Error ? error.message : 'unknown'
             });
         });
 
-        if (!client.isOpen) {
+        if (!nextClient.isOpen) {
             try {
-                await client.connect();
+                await nextClient.connect?.();
                 backendLogger.info('✅ Account Redis 連線成功');
             } catch (error) {
                 storageFailure = error;
@@ -239,6 +244,7 @@ export const createAccountStore = ({
                 throw error;
             }
         }
+        client = nextClient;
         return client;
     };
 
@@ -390,7 +396,7 @@ export const createAccountStore = ({
             };
         }
 
-        return syncVerifiedAccount(_request);
+        return syncVerifiedAccount(_request as AccountSyncRequest);
     };
 
     const updateCountersForCompletedGame = async ({
@@ -421,7 +427,7 @@ export const createAccountStore = ({
         };
 
         await writeProfile(nextProfile);
-        return buildPublicAccountProfile(nextProfile);
+        return buildPublicAccountProfile(nextProfile) ?? null;
     };
 
     const recordMatchCompletion = async ({

@@ -69,13 +69,14 @@ type ServerOrderDecision = Omit<GameState['orderDecision'], 'currentPlayer'> & {
     currentPlayer?: string;
 };
 
-type ServerGameState = Omit<GameState, 'removedCard' | 'settlement' | 'orderDecision'> & {
+type ServerGameState = Omit<GameState, 'removedCard' | 'settlement' | 'orderDecision' | 'winner'> & {
     hostId?: string | null;
     orderDecision: ServerOrderDecision;
     geishaSet?: GeishaSet;
     setupMode?: RoomSetupMode;
     customSelection?: CustomCharacterSelection;
     removedCard?: ItemCard | null;
+    winner?: string | null;
     settlement?: {
         removedCard?: ItemCard | null;
     };
@@ -732,8 +733,8 @@ export const createGameStateWithOrder = (
                 phase: 'result',
                 players: orderedPlayerIds,
                 result: {
-                    firstPlayer: orderedPlayerIds[0],
-                    secondPlayer: orderedPlayerIds[1],
+                    firstPlayer: orderedPlayerIds[0] ?? '',
+                    secondPlayer: orderedPlayerIds[1] ?? '',
                     order: orderedPlayerIds
                 },
                 confirmations: [...orderedPlayerIds],

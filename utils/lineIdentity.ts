@@ -1,4 +1,4 @@
-import { AccountSyncRequest } from 'game-shared-types';
+import { AccountSyncRequest, VerifiedLineIdentity } from 'game-shared-types';
 import { backendLogger } from './runtimeLogger.js';
 
 const LINE_VERIFY_ID_TOKEN_URL = 'https://api.line.me/oauth2/v2.1/verify';
@@ -21,7 +21,7 @@ const sanitizeString = (value: unknown): string | undefined => (
 
 const buildVerifiedIdentity = (
     verifiedProfile: LineVerifiedProfile,
-    source: AccountSyncRequest['verifiedIdentity']['source']
+    source: VerifiedLineIdentity['source']
 ): AccountSyncRequest | null => {
     const lineUserId = sanitizeString(verifiedProfile?.sub);
     if (!lineUserId) {
