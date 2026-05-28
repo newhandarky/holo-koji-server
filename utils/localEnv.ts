@@ -1,3 +1,4 @@
+// @ts-nocheck
 import { existsSync, readFileSync } from 'fs';
 
 const LOCAL_ENV_FILE = new URL('../.env.local', import.meta.url);

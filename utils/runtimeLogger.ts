@@ -1,3 +1,4 @@
+// @ts-nocheck
 const diagnosticsEnabled = process.env.GAME_DIAGNOSTICS === 'true';
 
 const sanitizeContext = (context = {}) => {

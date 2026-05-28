@@ -1,3 +1,4 @@
+// @ts-nocheck
 // server/index.js - 添加隨機順序決定功能
 import './utils/localEnv.js';
 import { randomBytes } from 'node:crypto';

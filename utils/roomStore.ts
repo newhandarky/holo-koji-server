@@ -1,3 +1,4 @@
+// @ts-nocheck
 // server/utils/roomStore.js - Redis 房間持久化
 import { createClient } from 'redis';
 import { backendLogger } from './runtimeLogger.js';

@@ -1,3 +1,4 @@
+// @ts-nocheck
 import { backendLogger } from './runtimeLogger.js';
 
 const LINE_VERIFY_ID_TOKEN_URL = 'https://api.line.me/oauth2/v2.1/verify';

@@ -1,3 +1,4 @@
+// @ts-nocheck
 export const createDisconnectedSocket = () => ({
     readyState: 3,
     send: () => { }

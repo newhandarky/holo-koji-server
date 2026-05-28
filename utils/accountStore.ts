@@ -1,3 +1,4 @@
+// @ts-nocheck
 import { createClient } from 'redis';
 import { backendLogger } from './runtimeLogger.js';
 import { createAchievementStore } from './achievementStore.js';
