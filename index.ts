@@ -1,20 +1,15 @@
 // server/index.js - 添加隨機順序決定功能
 import './utils/localEnv.js';
 import { randomBytes } from 'node:crypto';
-import { createServer, type IncomingMessage } from 'http';
-import { WebSocketServer, type RawData, type WebSocket } from 'ws';
+import { createServer } from 'http';
+import { WebSocketServer } from 'ws';
 import type {
-    AccountSyncRequest,
     ActionType,
-    AchievementAcknowledgeRequest,
-    ClientToServerMessage,
-    CreateRoomPayload,
     CustomCharacterSelection,
     GameState,
     Geisha,
     GeishaSet,
     ItemCard,
-    JoinRoomPayload,
     LineAccountProfile,
     RoomSetupMode
 } from 'game-shared-types';
@@ -31,9 +26,6 @@ import {
     buildOpeningDealSummary,
     buildPlayerVisibleGameState,
     markOpeningDealNotReplayable,
-    isSupportedGeishaSet,
-    normalizeGeishaSet,
-    normalizeRoomSetupMode,
     sanitizePendingInteractionForViewer,
     type ServerGameState
 } from './utils/gameUtils.js';
@@ -59,18 +51,9 @@ import { accountStore } from './utils/accountStore.js';
 import { resolveVerifiedLineAccountRequest } from './utils/lineIdentity.js';
 import { createHttpApp } from './http/app.js';
 import { createRoomRegistry } from './rooms/roomRegistry.js';
-import {
-    CUSTOM_SELECTION_ERROR_MESSAGE,
-    GEISHA_SET_CONFIG_ERROR_MESSAGE,
-    LEGACY_GEISHA_SET_ERROR_MESSAGE,
-    PLAYER_ID_TAKEN_ERROR_MESSAGE
-} from './rooms/roomErrors.js';
-import {
-    normalizeCustomSelection,
-    restoreRoomFromSnapshot,
-    type RestorableRoomLike,
-    type RestorableRoomSnapshot
-} from './rooms/roomRestore.js';
+import { GEISHA_SET_CONFIG_ERROR_MESSAGE } from './rooms/roomErrors.js';
+import { type RestorableRoomLike } from './rooms/roomRestore.js';
+import { registerWebSocketHandlers } from './ws/messageRouter.js';
 
 // NPC 設定（難度與思考時間）
 const NPC_DIFFICULTY_LABEL = {
@@ -168,14 +151,6 @@ const toCompetitionGroups = (value: unknown): string[][] => (
     Array.isArray(value)
         ? value.map((group) => toStringArray(group)).filter((group) => group.length > 0)
         : []
-);
-
-const isRecord = (value: unknown): value is JsonObject => (
-    Boolean(value) && typeof value === 'object' && !Array.isArray(value)
-);
-
-const getMessagePayload = (message: Partial<ClientToServerMessage> & { payload?: unknown }): unknown => (
-    message.payload
 );
 
 const normalizeNpcDifficulty = (difficulty: unknown): NpcDifficulty => {
@@ -2607,520 +2582,13 @@ class GameRoom implements RestorableRoomLike {
     }
 }
 
-// WebSocket 連線入口（處理玩家進出與訊息）
-wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
-    const origin = req.headers.origin;
-    backendLogger.info('🔌 客戶端已連接', {
-        origin: typeof origin === 'string' ? origin : 'unknown'
-    });
-
-    let currentPlayerId: string | null = null;
-    let currentRoomId: string | null = null;
-    let currentAccountProfile: LineAccountProfile | null = null;
-
-    // 監聽客戶端訊息
-    ws.on('message', async (data: RawData) => {
-        try {
-            const message = JSON.parse(data.toString()) as Partial<ClientToServerMessage> & { type?: unknown; payload?: unknown };
-            backendLogger.diagnostic('🐞 [Server] 收到訊息摘要', {
-                origin: typeof origin === 'string' ? origin : 'unknown',
-                ...summarizeWebSocketMessage(message)
-            });
-
-            switch (message.type) {
-                case 'ACCOUNT_SYNC':
-                    await handleAccountSync(ws, getMessagePayload(message));
-                    break;
-                case 'ACCOUNT_STATUS':
-                    await handleAccountStatus(ws);
-                    break;
-                case 'ACHIEVEMENT_STATUS':
-                    await handleAchievementStatus(ws);
-                    break;
-                case 'ACHIEVEMENT_ACK_NEW_UNLOCKS':
-                    await handleAchievementAckNewUnlocks(ws, getMessagePayload(message));
-                    break;
-                case 'JOIN_ROOM':
-                    await handleJoinRoom(ws, getMessagePayload(message));
-                    break;
-                case 'CREATE_ROOM':
-                    await handleCreateRoom(ws, getMessagePayload(message));
-                    break;
-                case 'CONFIRM_ORDER':
-                    handleConfirmOrder(ws);
-                    break;
-                case 'GAME_ACTION':
-                    handleGameAction(ws, getMessagePayload(message));
-                    break;
-                case 'READY_CONFIRM':
-                    handleReadyConfirm(ws);
-                    break;
-                case 'REMATCH_REQUEST':
-                    handleRematchRequest(ws);
-                    break;
-                case 'LEAVE_ROOM':
-                    handleLeaveRoom(ws);
-                    break;
-                default:
-                    backendLogger.warn('⚠️ 未知訊息類型', {
-                        type: typeof message?.type === 'string' ? message.type : 'unknown',
-                        origin: typeof origin === 'string' ? origin : 'unknown'
-                    });
-            }
-        } catch (error) {
-            backendLogger.error('❌ 訊息解析錯誤', {
-                origin: typeof origin === 'string' ? origin : 'unknown',
-                error: error instanceof Error ? error.message : 'unknown'
-            });
-        }
-    });
-
-    // 連線關閉時清理狀態
-    ws.on('close', () => {
-        if (currentRoomId && currentPlayerId) {
-            handleLeaveRoom(ws);
-        }
-        backendLogger.info('🔌 客戶端已斷線', {
-            origin: typeof origin === 'string' ? origin : 'unknown',
-            roomId: currentRoomId ?? undefined,
-            playerId: currentPlayerId ?? undefined
-        });
-    });
-
-    async function handleAccountSync(ws: WebSocket, payload: unknown = {}) {
-        const accountSyncRequest = isRecord(payload) ? payload as AccountSyncRequest : {};
-        const verifiedAccountRequest = await resolveVerifiedLineAccountRequest(accountSyncRequest);
-        const syncResult = verifiedAccountRequest
-            ? await accountStore.syncAccount(verifiedAccountRequest, { trustedIdentity: true })
-            : await accountStore.syncAccount(accountSyncRequest);
-        currentAccountProfile = syncResult.status === 'bound' && syncResult.profile ? syncResult.profile : null;
-
-        if (currentRoomId && currentPlayerId && currentAccountProfile) {
-            const room = gameRooms.get(currentRoomId);
-            const player = room?.players.find((item) => item.playerId === currentPlayerId);
-            if (room && player) {
-                player.accountProfile = currentAccountProfile;
-                player.lineUserId = currentAccountProfile.lineUserId;
-                player.avatarUrl = currentAccountProfile.avatarUrl;
-                if (room.gameState) {
-                    const statePlayer = room.gameState.players.find((item) => item.id === currentPlayerId);
-                    if (statePlayer) {
-                        statePlayer.lineUserId = currentAccountProfile.lineUserId;
-                        statePlayer.avatarUrl = currentAccountProfile.avatarUrl;
-                    }
-                    room.broadcastGameState();
-                }
-                room.persistRoomSnapshot();
-            }
-        }
-
-        ws.send(JSON.stringify({
-            type: 'ACCOUNT_SYNC_RESULT',
-            payload: syncResult
-        }));
-    }
-
-    async function handleAccountStatus(ws: WebSocket) {
-        const persistenceStatus = await accountStore.checkPersistenceStatus();
-        ws.send(JSON.stringify({
-            type: 'ACCOUNT_SYNC_RESULT',
-            payload: {
-                status: currentAccountProfile ? 'bound' : 'guest',
-                ...(currentAccountProfile ? { profile: currentAccountProfile } : {}),
-                persistenceStatus
-            }
-        }));
-    }
-
-    async function handleAchievementStatus(ws: WebSocket) {
-        const summary = await accountStore.getAchievementSummary(currentAccountProfile?.lineUserId);
-        ws.send(JSON.stringify({
-            type: 'ACHIEVEMENT_STATUS_RESULT',
-            payload: summary
-        }));
-    }
-
-    async function handleAchievementAckNewUnlocks(ws: WebSocket, payload: unknown = {}) {
-        const achievementRequest = isRecord(payload) ? payload as AchievementAcknowledgeRequest : {};
-        const achievementIds = Array.isArray(achievementRequest.achievementIds)
-            ? achievementRequest.achievementIds
-            : [];
-        const summary = await accountStore.acknowledgeNewUnlocks(
-            currentAccountProfile?.lineUserId,
-            achievementIds
-        );
-        ws.send(JSON.stringify({
-            type: 'ACHIEVEMENT_STATUS_RESULT',
-            payload: summary
-        }));
-    }
-
-    // 建立房間流程（含基本參數驗證）
-    async function handleCreateRoom(ws: WebSocket, payload: unknown) {
-        if (!isRecord(payload) || typeof payload.playerId !== 'string' || !payload.playerId) {
-            ws.send(JSON.stringify({
-                type: 'ERROR',
-                payload: { message: '缺少 playerId' }
-            }));
-            return;
-        }
-        const createPayload = payload as Partial<CreateRoomPayload> & PlayerMetaPayload;
-
-        const mode = createPayload.mode === 'npc' ? 'npc' : 'online';
-        const aiDifficulty = normalizeNpcDifficulty(createPayload.aiDifficulty ?? 'easy');
-        const requestedGeishaSet = normalizeGeishaSet(createPayload.geishaSet);
-        let setupMode = DEFAULT_ROOM_SETUP_MODE;
-        if (!isSupportedGeishaSet(requestedGeishaSet)) {
-            ws.send(JSON.stringify({
-                type: 'ERROR',
-                payload: { message: LEGACY_GEISHA_SET_ERROR_MESSAGE }
-            }));
-            return;
-        }
-        try {
-            setupMode = normalizeRoomSetupMode(createPayload.setupMode);
-        } catch (_error) {
-            ws.send(JSON.stringify({
-                type: 'ERROR',
-                payload: { message: CUSTOM_SELECTION_ERROR_MESSAGE }
-            }));
-            return;
-        }
-
-        const roomId = generateRoomId();
-        const room = new GameRoom(roomId);
-        gameRooms.set(roomId, room);
-
-        currentPlayerId = payload.playerId;
-        currentRoomId = roomId;
-        room.hostId = currentPlayerId;
-        room.geishaSet = requestedGeishaSet as GeishaSet;
-        room.setupMode = setupMode;
-        room.customSelection = setupMode === 'custom'
-            ? normalizeCustomSelection(createPayload.customSelection)
-            : null;
-        if (!room.regenerateBaseGeishas()) {
-            gameRooms.delete(roomId);
-            currentRoomId = null;
-            currentPlayerId = null;
-            ws.send(JSON.stringify({
-                type: 'ERROR',
-                payload: { message: setupMode === 'custom' ? CUSTOM_SELECTION_ERROR_MESSAGE : GEISHA_SET_CONFIG_ERROR_MESSAGE }
-            }));
-            return;
-        }
-        room.customSelection = setupMode === 'custom'
-            ? normalizeCustomSelection(room.customSelection)
-            : null;
-        if (setupMode === 'custom' && !room.customSelection) {
-            gameRooms.delete(roomId);
-            currentRoomId = null;
-            currentPlayerId = null;
-            ws.send(JSON.stringify({
-                type: 'ERROR',
-                payload: { message: CUSTOM_SELECTION_ERROR_MESSAGE }
-            }));
-            return;
-        }
-
-        room.addPlayer(currentPlayerId, ws, {
-            ...createPayload,
-            accountProfile: currentAccountProfile
-        });
-        const hostSeat = room.players.find((player) => player.playerId === currentPlayerId);
-
-        if (mode === 'npc') {
-            room.addNpcPlayer(aiDifficulty);
-        }
-
-        backendLogger.info(`🏠 房間 ${roomId} 已建立`, {
-            roomId,
-            playerId: currentPlayerId,
-            mode,
-            geishaSet: requestedGeishaSet,
-            setupMode,
-            origin: typeof origin === 'string' ? origin : 'unknown'
-        });
-
-        ws.send(JSON.stringify({
-            type: 'ROOM_CREATED',
-            payload: {
-                roomId,
-                playerId: currentPlayerId,
-                roomSessionToken: hostSeat?.sessionToken
-            }
-        }));
-
-        const baseGeishas = room.baseGeishas;
-        if (!baseGeishas) {
-            ws.send(JSON.stringify({
-                type: 'ERROR',
-                payload: { message: GEISHA_SET_CONFIG_ERROR_MESSAGE }
-            }));
-            return;
-        }
-        const initialGameState = createWaitingGameState(
-            roomId,
-            room.players.map(p => p.playerId),
-            baseGeishas,
-            room.geishaSet,
-            room.getPlayerMetaMap()
-        );
-        initialGameState.hostId = room.hostId;
-        room.gameState = initialGameState;
-
-        room.broadcastGameState();
-
-        room.persistRoomSnapshot();
-
-        if (room.players.length === room.maxPlayers) {
-            backendLogger.info(`🎮 房間 ${roomId} 已滿，開始隨機決定順序`, {
-                roomId
-            });
-            setTimeout(() => {
-                room.startOrderDecision();
-            }, 800);
-        }
-    }
-
-    // 加入房間流程（含房間與參數驗證）
-    async function handleJoinRoom(ws: WebSocket, payload: unknown) {
-        if (!isRecord(payload) || typeof payload.roomId !== 'string' || typeof payload.playerId !== 'string' || !payload.roomId || !payload.playerId) {
-            ws.send(JSON.stringify({
-                type: 'ERROR',
-                payload: { message: '缺少 roomId 或 playerId', code: 'INVALID_JOIN_REQUEST' }
-            }));
-            return;
-        }
-
-        const joinPayload = payload as Partial<JoinRoomPayload> & PlayerMetaPayload;
-        const { roomId, playerId } = payload;
-        let room = gameRooms.get(roomId);
-
-        if (!room) {
-            const snapshot = await loadRoomSnapshot<RestorableRoomSnapshot>(roomId);
-            if (snapshot) {
-                const restoreResult = restoreRoomFromSnapshot(snapshot, {
-                    createRoom: (restoredRoomId) => new GameRoom(restoredRoomId)
-                });
-                room = restoreResult.room ?? undefined;
-                if (room) {
-                    gameRooms.set(roomId, room);
-                } else if (restoreResult.errorMessage) {
-                    ws.send(JSON.stringify({
-                        type: 'ERROR',
-                        payload: { message: restoreResult.errorMessage, code: 'ROOM_RESTORE_FAILED' }
-                    }));
-                    return;
-                }
-            }
-        }
-
-        if (!room) {
-            ws.send(JSON.stringify({
-                type: 'ERROR',
-                payload: { message: '房間不存在', code: 'ROOM_NOT_FOUND' }
-            }));
-            return;
-        }
-        if (!room.ensureBaseGeishas()) {
-            ws.send(JSON.stringify({
-                type: 'ERROR',
-                payload: { message: GEISHA_SET_CONFIG_ERROR_MESSAGE, code: 'ROOM_CONFIG_INVALID' }
-            }));
-            return;
-        }
-        const isExistingPlayer = room.players.some(player => player.playerId === playerId);
-        if (!isExistingPlayer && room.gameState?.phase && room.gameState.phase !== 'waiting') {
-            ws.send(JSON.stringify({
-                type: 'ERROR',
-                payload: { message: '房間已開始對局', code: 'ROOM_ALREADY_STARTED' }
-            }));
-            return;
-        }
-        const result = room.addPlayer(playerId, ws, {
-            ...joinPayload,
-            roomSessionToken: joinPayload.roomSessionToken,
-            accountProfile: currentAccountProfile
-        });
-
-        if (result === 'session-mismatch') {
-            ws.send(JSON.stringify({
-                type: 'ERROR',
-                payload: { message: PLAYER_ID_TAKEN_ERROR_MESSAGE, code: 'PLAYER_ID_TAKEN' }
-            }));
-            return;
-        }
-
-        if (result === 'full') {
-            ws.send(JSON.stringify({
-                type: 'ERROR',
-                payload: { message: '房間已滿', code: 'ROOM_FULL' }
-            }));
-            return;
-        }
-
-        currentPlayerId = playerId;
-        currentRoomId = roomId;
-
-        if (result === 'existing') {
-            backendLogger.info(`♻️ 玩家 ${playerId} 已在房間 ${roomId}，同步當前狀態`, {
-                roomId,
-                playerId
-            });
-            if (room.gameState) {
-                const payloadState = room.buildClientGameState(playerId);
-                ws.send(JSON.stringify({
-                    type: 'GAME_STATE_UPDATED',
-                    payload: payloadState
-                }));
-            }
-            return;
-        }
-
-        backendLogger.info(`👤 玩家 ${playerId} 加入房間 ${roomId}`, {
-            roomId,
-            playerId,
-            geishaSet: room.geishaSet,
-            origin: typeof origin === 'string' ? origin : 'unknown'
-        });
-
-        ws.send(JSON.stringify({
-            type: 'PLAYER_JOINED',
-            payload: {
-                playerId,
-                roomId,
-                roomSessionToken: room.players.find((player) => player.playerId === playerId)?.sessionToken
-            }
-        }));
-
-        const baseGeishas = room.baseGeishas;
-        if (!baseGeishas) {
-            ws.send(JSON.stringify({
-                type: 'ERROR',
-                payload: { message: GEISHA_SET_CONFIG_ERROR_MESSAGE, code: 'ROOM_CONFIG_INVALID' }
-            }));
-            return;
-        }
-        const updatedGameState = createWaitingGameState(
-            roomId,
-            room.players.map(p => p.playerId),
-            baseGeishas,
-            room.geishaSet,
-            room.getPlayerMetaMap()
-        );
-        updatedGameState.hostId = room.hostId;
-        room.gameState = updatedGameState;
-
-        room.broadcastGameState();
-
-        room.persistRoomSnapshot();
-
-        if (room.players.length === room.maxPlayers) {
-            backendLogger.info(`🎮 房間 ${roomId} 已滿，開始隨機決定順序`, {
-                roomId
-            });
-            setTimeout(() => {
-                room.startOrderDecision();
-            }, 1000);
-        }
-    }
-
-    // 玩家確認順序（等待雙方確認後開始遊戲）
-    function handleConfirmOrder(_ws: WebSocket) {
-        if (!currentRoomId || !currentPlayerId) {
-            return;
-        }
-        const room = gameRooms.get(currentRoomId);
-        if (!room || !currentPlayerId) {
-            return;
-        }
-        room.confirmOrder(currentPlayerId);
-    }
-
-    // 處理遊戲行動（含基本驗證）
-    function handleGameAction(_ws: WebSocket, payload: unknown) {
-        if (!currentRoomId || !currentPlayerId) {
-            return;
-        }
-        const room = gameRooms.get(currentRoomId);
-        if (!room) {
-            return;
-        }
-
-        if (!isRecord(payload) || !isRecord(payload.action) || typeof payload.action.type !== 'string') {
-            backendLogger.warn('⚠️ GAME_ACTION 缺少 action 內容', {
-                roomId: currentRoomId ?? undefined,
-                playerId: currentPlayerId ?? undefined
-            });
-            room.sendError(currentPlayerId, '缺少行動內容');
-            return;
-        }
-
-        const actionPayload = isRecord(payload.action.payload)
-            ? payload.action.payload as GameActionPayload
-            : undefined;
-        room.handleAction(currentPlayerId, {
-            type: payload.action.type,
-            ...(actionPayload ? { payload: actionPayload } : {})
-        });
-    }
-
-    // 玩家準備確認
-    function handleReadyConfirm(_ws: WebSocket) {
-        if (!currentRoomId || !currentPlayerId) {
-            return;
-        }
-        const room = gameRooms.get(currentRoomId);
-        if (!room) {
-            return;
-        }
-
-        room.confirmReady(currentPlayerId);
-    }
-
-    // 再來一場請求
-    function handleRematchRequest(_ws: WebSocket) {
-        if (!currentRoomId || !currentPlayerId) {
-            return;
-        }
-        const room = gameRooms.get(currentRoomId);
-        if (!room) {
-            return;
-        }
-
-        room.requestRematch(currentPlayerId);
-    }
-
-    // 玩家離開房間（斷線或主動退出）
-    function handleLeaveRoom(ws: WebSocket) {
-        if (currentRoomId && currentPlayerId) {
-            const room = gameRooms.get(currentRoomId);
-            if (room) {
-                const shouldDetachOnly = room.gameState?.phase && room.gameState.phase !== 'waiting';
-                if (shouldDetachOnly) {
-                    room.detachPlayerConnection(currentPlayerId, ws);
-                } else {
-                    room.removePlayer(currentPlayerId);
-                    room.broadcast({
-                        type: 'PLAYER_LEFT',
-                        payload: { playerId: currentPlayerId }
-                    });
-
-                    const hasOnlyNpc = room.players.length === 1 && room.npcId && room.players[0].playerId === room.npcId;
-                    if (room.players.length === 0 || hasOnlyNpc) {
-                        gameRooms.delete(currentRoomId);
-                        void deleteRoomSnapshot(currentRoomId);
-                        backendLogger.info(`🗑️ 房間 ${currentRoomId} 已刪除`, {
-                            roomId: currentRoomId
-                        });
-                    }
-                }
-            }
-        }
-        currentRoomId = null;
-        currentPlayerId = null;
-    }
+registerWebSocketHandlers(wss, {
+    rooms: gameRooms,
+    createRoom: (roomId) => new GameRoom(roomId),
+    loadRoomSnapshot,
+    deleteRoomSnapshot,
+    accountStore,
+    resolveVerifiedLineAccountRequest
 });
 
 // 建立遮蔽卡片（避免洩漏對手手牌資訊）
@@ -3135,11 +2603,6 @@ function createMaskedCard(prefix: string, index: number): ItemCard {
 // 依指定長度建立遮蔽卡片陣列
 function createMaskedCards(count: number, prefix: string): ItemCard[] {
     return Array.from({ length: count }, (_, index) => createMaskedCard(prefix, index));
-}
-
-// 產生 6 碼房間代碼
-function generateRoomId() {
-    return Math.random().toString(36).substring(2, 8).toUpperCase();
 }
 
 const PORT = Number(process.env.PORT || 3001);

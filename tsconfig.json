@@ -18,6 +18,7 @@
     "index.ts",
     "http/**/*.ts",
     "rooms/**/*.ts",
+    "ws/**/*.ts",
     "utils/**/*.ts"
   ],
   "exclude": [
