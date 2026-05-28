@@ -1,4 +1,3 @@
-// @ts-nocheck
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
@@ -12,12 +11,18 @@ const verifiedIdentity = {
     lineUserId: 'U1234567890',
     verifiedAt: '2026-05-05T12:34:56.000Z',
     source: 'line-login-verification'
-};
+} as const;
 
 const profile = {
     displayName: '銀座玩家',
     avatarUrl: 'https://example.test/avatar.png'
-};
+} as const;
+
+const durablePersistenceStatus = {
+    mode: 'durable',
+    available: true,
+    message: 'Account profiles are persistent.'
+} as const;
 
 const fixedClock = (iso) => () => new Date(iso);
 
@@ -171,13 +176,16 @@ test('recordMatchCompletion updates account counters and achievement progress fr
         recordMatchCompletion: async (event) => {
             achievementCalls.push(event);
             return {
-                status: 'available',
+                status: 'available' as const,
                 completionId: event.completionId,
+                persistenceStatus: durablePersistenceStatus,
                 updates: [
                     {
                         lineUserId: event.players[0].accountProfile.lineUserId,
-                        achievementId: 'first_completed_match',
-                        currentValue: 1
+                        achievementId: 'first_completed_match' as const,
+                        currentValue: 1,
+                        target: 1,
+                        updatedAt: event.completedAt
                     }
                 ]
             };
@@ -211,13 +219,16 @@ test('recordMatchCompletion ignores repeated completionId for account counters a
         recordMatchCompletion: async (event) => {
             achievementCalls.push(event);
             return {
-                status: 'available',
+                status: 'available' as const,
                 completionId: event.completionId,
+                persistenceStatus: durablePersistenceStatus,
                 updates: [
                     {
                         lineUserId: event.players[0].accountProfile.lineUserId,
-                        achievementId: 'first_completed_match',
-                        currentValue: 1
+                        achievementId: 'first_completed_match' as const,
+                        currentValue: 1,
+                        target: 1,
+                        updatedAt: event.completedAt
                     }
                 ]
             };
@@ -366,7 +377,7 @@ test('public projection strips private account fields', () => {
             wins: 2,
             lastPlayedAt: '2026-05-05T14:00:00.000Z'
         }
-    });
+    } as unknown as Parameters<typeof buildPublicAccountProfile>[0]);
 
     assert.deepEqual(publicProfile, {
         lineUserId: 'U1234567890',

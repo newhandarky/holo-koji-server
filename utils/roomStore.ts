@@ -1,19 +1,18 @@
-// @ts-nocheck
 // server/utils/roomStore.js - Redis 房間持久化
-import { createClient } from 'redis';
+import { createClient, RedisClientType } from 'redis';
 import { backendLogger } from './runtimeLogger.js';
 
 const REDIS_URL = process.env.REDIS_URL;
 const ROOM_TTL_SECONDS = Number.parseInt(process.env.ROOM_TTL_SECONDS ?? '3600', 10);
 const ROOM_KEY_PREFIX = 'hanamikoji:room:';
 
-let redisClient = null;
+let redisClient: RedisClientType | null = null;
 
-const getRoomKey = (roomId) => `${ROOM_KEY_PREFIX}${roomId}`;
+const getRoomKey = (roomId: string) => `${ROOM_KEY_PREFIX}${roomId}`;
 
 export const isRedisEnabled = () => Boolean(REDIS_URL);
 
-const getClient = async () => {
+const getClient = async (): Promise<RedisClientType | null> => {
     if (!REDIS_URL) {
         return null;
     }
@@ -35,7 +34,7 @@ const getClient = async () => {
     return redisClient;
 };
 
-export const saveRoomSnapshot = async (roomId, snapshot) => {
+export const saveRoomSnapshot = async (roomId: string, snapshot: unknown): Promise<void> => {
     if (!REDIS_URL) {
         return;
     }
@@ -55,7 +54,7 @@ export const saveRoomSnapshot = async (roomId, snapshot) => {
     }
 };
 
-export const loadRoomSnapshot = async (roomId) => {
+export const loadRoomSnapshot = async <TSnapshot = unknown>(roomId: string): Promise<TSnapshot | null> => {
     if (!REDIS_URL) {
         return null;
     }
@@ -66,7 +65,7 @@ export const loadRoomSnapshot = async (roomId) => {
             return null;
         }
         const raw = await client.get(getRoomKey(roomId));
-        return raw ? JSON.parse(raw) : null;
+        return raw ? JSON.parse(raw) as TSnapshot : null;
     } catch (error) {
         backendLogger.error(`❌ 讀取房間 ${roomId} 失敗`, {
             roomId,
@@ -76,7 +75,7 @@ export const loadRoomSnapshot = async (roomId) => {
     }
 };
 
-export const deleteRoomSnapshot = async (roomId) => {
+export const deleteRoomSnapshot = async (roomId: string): Promise<void> => {
     if (!REDIS_URL) {
         return;
     }

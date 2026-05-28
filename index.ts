@@ -1,4 +1,3 @@
-// @ts-nocheck
 // server/index.js - 添加隨機順序決定功能
 import './utils/localEnv.js';
 import { randomBytes } from 'node:crypto';
@@ -6,6 +5,17 @@ import express from 'express';
 import { createServer } from 'http';
 import { WebSocketServer } from 'ws';
 import cors from 'cors';
+import type {
+    AccountSyncRequest,
+    AchievementAcknowledgeRequest,
+    CustomCharacterSelection,
+    GameState,
+    Geisha,
+    GeishaSet,
+    ItemCard,
+    LineAccountProfile,
+    RoomSetupMode
+} from 'game-shared-types';
 import {
     DEFAULT_GEISHA_SET,
     DEFAULT_ROOM_SETUP_MODE,
@@ -41,7 +51,9 @@ import {
     buildRestoredRoomSeats,
     createDisconnectedSocket,
     createNpcSocket,
-    serializeRoomSeat
+    serializeRoomSeat,
+    type RoomSeat,
+    type RoomSocketLike
 } from './utils/roomSession.js';
 import { accountStore } from './utils/accountStore.js';
 import { resolveVerifiedLineAccountRequest } from './utils/lineIdentity.js';
@@ -62,7 +74,60 @@ const NPC_THINKING_DELAY = {
     hell: 350
 };
 
-const normalizeNpcDifficulty = (difficulty) => {
+type NpcDifficulty = keyof typeof NPC_DIFFICULTY_LABEL;
+type TimerHandle = ReturnType<typeof setTimeout>;
+
+type JsonObject = Record<string, unknown>;
+type WireMessage = {
+    type: string;
+    payload?: unknown;
+};
+
+type PlayerMetaPayload = {
+    displayName?: unknown;
+    accountProfile?: LineAccountProfile | null;
+    roomSessionToken?: unknown;
+};
+
+type NormalizedPlayerMeta = {
+    name: string;
+    lineUserId?: string;
+    avatarUrl?: string;
+    accountProfile?: LineAccountProfile;
+};
+
+type OrderDecisionResult = {
+    firstPlayer: string;
+    secondPlayer: string;
+    order: string[];
+};
+
+type OrderDecisionState = {
+    isDeciding: boolean;
+    result: OrderDecisionResult | null;
+    confirmations: Set<string>;
+};
+
+type DealSequenceStep = {
+    order?: number;
+    playerId: string;
+    card?: ItemCard;
+    [key: string]: unknown;
+};
+
+type RoundPreparationOptions = {
+    orderedPlayerIds?: string[] | null;
+    roundNumber?: number | null;
+    openOrderDecision?: boolean;
+};
+
+type GameRoomPlayer = RoomSeat & {
+    sessionToken?: string;
+};
+
+type ServerGameState = ReturnType<typeof createWaitingGameState>;
+
+const normalizeNpcDifficulty = (difficulty: unknown): NpcDifficulty => {
     if (difficulty === 'easy' || difficulty === 'medium' || difficulty === 'hard' || difficulty === 'expert' || difficulty === 'hell') {
         return difficulty;
     }
@@ -75,20 +140,20 @@ const GEISHA_SET_CONFIG_ERROR_MESSAGE = '角色組合資料設定錯誤，請重
 const CUSTOM_SELECTION_ERROR_MESSAGE = '自訂角色選擇無效，請重新選擇七位同組合角色。';
 const PLAYER_ID_TAKEN_ERROR_MESSAGE = '此玩家名稱已在房間中使用，請重新加入或更換名稱。';
 
-const createRoomSessionToken = () => randomBytes(24).toString('hex');
+const createRoomSessionToken = (): string => randomBytes(24).toString('hex');
 
-const normalizeRoomSessionToken = (token) => (
+const normalizeRoomSessionToken = (token: unknown): string | null => (
     typeof token === 'string' && token.trim() ? token.trim() : null
 );
 
 
-const normalizePlayerMeta = (playerId, payload = {}) => {
+const normalizePlayerMeta = (playerId: string, payload: PlayerMetaPayload = {}): NormalizedPlayerMeta => {
     const displayName = typeof payload.displayName === 'string' && payload.displayName.trim()
         ? payload.displayName.trim()
         : playerId;
 
     const accountProfile = payload.accountProfile && typeof payload.accountProfile === 'object'
-        ? payload.accountProfile
+        ? payload.accountProfile as LineAccountProfile
         : null;
 
     const lineUserId = typeof accountProfile?.lineUserId === 'string' && accountProfile.lineUserId.trim()
@@ -145,12 +210,35 @@ app.get('/health', (req, res) => {
 });
 
 // 房間管理表（roomId → GameRoom）
-const gameRooms = new Map();
+const gameRooms = new Map<string, GameRoom>();
 // WebSocket 伺服器實體
 const wss = new WebSocketServer({ server });
 
 class GameRoom {
-    constructor(roomId) {
+    roomId: string;
+    createdAt: number;
+    players: GameRoomPlayer[];
+    gameState: ServerGameState | null;
+    maxPlayers: number;
+    hostId: string | null;
+    geishaSet: GeishaSet;
+    setupMode: RoomSetupMode;
+    customSelection: CustomCharacterSelection | null;
+    orderDecisionState: OrderDecisionState;
+    baseGeishas: Geisha[] | null;
+    dealSequence: DealSequenceStep[];
+    lastRoundStarterId: string | null;
+    roundResolveTimer: TimerHandle | null;
+    npcId: string | null;
+    npcDifficulty: NpcDifficulty | null;
+    npcActionTimer: TimerHandle | null;
+    npcResponseTimer: TimerHandle | null;
+    rematchConfirmations: Set<string>;
+    readyConfirmations: Set<string>;
+    matchCompletionCounter: number;
+    currentCompletionId: string | null;
+
+    constructor(roomId: string) {
         // 房間 ID
         this.roomId = roomId;
         // 房間建立時間
@@ -257,7 +345,7 @@ class GameRoom {
         return npcId;
     }
 
-    getPlayerMetaMap() {
+    getPlayerMetaMap(): Record<string, { name: string; lineUserId?: string; avatarUrl?: string }> {
         return this.players.reduce((map, player) => {
             map[player.playerId] = {
                 name: player.name ?? player.playerId,
@@ -422,7 +510,7 @@ class GameRoom {
     }
 
     // 將訊息傳送給指定玩家（避免廣播時洩漏資訊）
-    sendToPlayer(playerId, message) {
+    sendToPlayer(playerId: string, message: WireMessage): void {
         const target = this.players.find(player => player.playerId === playerId);
         if (!target) {
             backendLogger.warn(`⚠️ 找不到玩家 ${playerId}，無法傳送訊息`, {
@@ -459,7 +547,7 @@ class GameRoom {
     }
 
     // 傳送錯誤訊息給指定玩家（統一錯誤回傳格式）
-    sendError(playerId, message, code) {
+    sendError(playerId: string, message: string, code?: string): void {
         this.sendToPlayer(playerId, {
             type: 'ERROR',
             payload: {
@@ -483,7 +571,7 @@ class GameRoom {
     }
 
     // 將遊戲狀態整理成玩家可見版本（隱藏對手手牌與密約資訊）
-    buildClientGameState(viewerId) {
+    buildClientGameState(viewerId: string) {
         if (!this.gameState) {
             return null;
         }
@@ -498,7 +586,7 @@ class GameRoom {
     }
 
     // 依玩家視角建立發牌動畫序列（開局動畫一律只顯示背面）
-    buildDealSequenceForPlayer(playerId) {
+    buildDealSequenceForPlayer(playerId: string) {
         return this.dealSequence.map((step, index) => {
             return {
                 ...step,
@@ -508,7 +596,7 @@ class GameRoom {
     }
 
     // 加入玩家到房間，並回傳加入結果
-    addPlayer(playerId, ws, meta = {}) {
+    addPlayer(playerId: string, ws: RoomSocketLike, meta: PlayerMetaPayload = {}) {
         // 基本檢查：避免空白 playerId
         if (!playerId) {
             backendLogger.warn('⚠️ 嘗試加入房間但 playerId 為空', {
@@ -583,7 +671,7 @@ class GameRoom {
         this.persistRoomSnapshot();
     }
 
-    detachPlayerConnection(playerId, ws = null) {
+    detachPlayerConnection(playerId: string, ws: RoomSocketLike | null = null) {
         const player = this.players.find(p => p.playerId === playerId);
         if (!player) {
             return false;
@@ -604,7 +692,7 @@ class GameRoom {
     }
 
     // 廣播訊息給房間內所有玩家（非狀態同步使用）
-    broadcast(message, excludePlayerId = null) {
+    broadcast(message: WireMessage, excludePlayerId: string | null = null): void {
         let successCount = 0;
         this.players.forEach((player, index) => {
             if (player.playerId !== excludePlayerId) {
@@ -645,7 +733,7 @@ class GameRoom {
     }
 
     // 準備新回合的初始狀態（洗牌、移除卡、發牌）
-    prepareRoundState({ orderedPlayerIds = null, roundNumber = null, openOrderDecision = true } = {}) {
+    prepareRoundState({ orderedPlayerIds = null, roundNumber = null, openOrderDecision = true }: RoundPreparationOptions = {}) {
         const playerIds = orderedPlayerIds ?? this.players.map(p => p.playerId);
 
         if (playerIds.length < 2) {
@@ -1721,7 +1809,10 @@ class GameRoom {
             void accountStore.recordMatchCompletion({
                 completionId: this.currentCompletionId,
                 winner,
-                players: this.players
+                players: this.players.map((player) => ({
+                    playerId: player.playerId,
+                    accountProfile: player.accountProfile
+                }))
             }).catch((error) => {
                 backendLogger.error('❌ Account counter update failed', {
                     roomId: this.roomId,
@@ -2434,10 +2525,10 @@ const restoreRoomFromSnapshot = (snapshot) => {
         return { room: null, errorMessage: LEGACY_ROOM_SNAPSHOT_ERROR_MESSAGE };
     }
 
-    let snapshotGeishaSet = DEFAULT_GEISHA_SET;
+    let snapshotGeishaSet: GeishaSet = DEFAULT_GEISHA_SET;
     let resolvedBoard = null;
     try {
-        snapshotGeishaSet = resolveRestorableGeishaSet(snapshot);
+        snapshotGeishaSet = resolveRestorableGeishaSet(snapshot) as GeishaSet;
         resolvedBoard = resolveRestorableBoardForSet(snapshot, snapshotGeishaSet);
     } catch (_error) {
         return { room: null, errorMessage: LEGACY_ROOM_SNAPSHOT_ERROR_MESSAGE };
@@ -2612,7 +2703,7 @@ wss.on('connection', (ws, req) => {
         }));
     }
 
-    async function handleAchievementAckNewUnlocks(ws, payload = {}) {
+    async function handleAchievementAckNewUnlocks(ws, payload: AchievementAcknowledgeRequest = {}) {
         const achievementIds = Array.isArray(payload?.achievementIds)
             ? payload.achievementIds
             : [];
@@ -2664,7 +2755,7 @@ wss.on('connection', (ws, req) => {
         currentPlayerId = payload.playerId;
         currentRoomId = roomId;
         room.hostId = currentPlayerId;
-        room.geishaSet = requestedGeishaSet;
+        room.geishaSet = requestedGeishaSet as GeishaSet;
         room.setupMode = setupMode;
         room.customSelection = setupMode === 'custom'
             ? payload.customSelection
@@ -2965,7 +3056,7 @@ function generateRoomId() {
     return Math.random().toString(36).substring(2, 8).toUpperCase();
 }
 
-const PORT = process.env.PORT || 3001;
+const PORT = Number(process.env.PORT || 3001);
 
 server.listen(PORT, '0.0.0.0', () => {
     backendLogger.info('🚀 WebSocket 伺服器已啟動', {

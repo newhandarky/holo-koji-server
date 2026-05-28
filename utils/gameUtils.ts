@@ -1,14 +1,109 @@
-// @ts-nocheck
-/**
- * @typedef {import('game-shared-types').Geisha} Geisha
- * @typedef {import('game-shared-types').ItemCard} ItemCard
- */
+import type {
+    ActionToken,
+    CharacterProfile,
+    CustomCharacterSelection,
+    GameState,
+    Geisha,
+    GeishaSet,
+    ItemCard,
+    OpeningDealSummary,
+    OpeningDealStep,
+    PendingInteraction,
+    Player,
+    RoomSetupMode
+} from 'game-shared-types';
 import { characterProfilesBySet } from './characterProfiles.js';
 
 const DEFAULT_WEB_APP_URL = 'https://newhandarky.github.io/holo-koji';
 const assetBaseUrl = (process.env.WEB_APP_URL || process.env.REACT_APP_WEB_APP_URL || DEFAULT_WEB_APP_URL).replace(/\/$/, '');
 
-const resolveAssetUrl = (assetPath) => {
+interface BoardSlotDefinition {
+    slotId: number;
+    slotOrder: number;
+    charmPoints: number;
+    itemAssetName: string;
+    itemLabel: string;
+    itemImageUrl: string;
+    itemIconUrl: string;
+}
+
+export interface RandomSource {
+    nextInt: (maxExclusive: number) => number;
+    nextToken: () => string;
+}
+
+type PartialRandomSource = Partial<RandomSource>;
+
+interface GeishaCreationOptions {
+    randomSource?: PartialRandomSource;
+    characterPool?: CharacterProfile[];
+    boardSlots?: BoardSlotDefinition[];
+    selectedCharacterIds?: string[] | null;
+}
+
+interface CustomSelectionValidationOptions {
+    characterPool?: CharacterProfile[];
+}
+
+interface RestorableSnapshot {
+    geishaSet?: unknown;
+    setupMode?: unknown;
+    customSelection?: CustomCharacterSelection;
+    baseGeishas?: Geisha[];
+    gameState?: Partial<ServerGameState>;
+}
+
+interface RestorableSetOptions {
+    isSupportedSet?: (setKey: unknown) => boolean;
+}
+
+interface PlayerMeta {
+    name?: string;
+    lineUserId?: string;
+    avatarUrl?: string;
+}
+
+export type PlayerMetaMap = Record<string, PlayerMeta | undefined>;
+
+type ServerOrderDecision = Omit<GameState['orderDecision'], 'currentPlayer'> & {
+    currentPlayer?: string;
+};
+
+type ServerGameState = Omit<GameState, 'removedCard' | 'settlement' | 'orderDecision'> & {
+    hostId?: string | null;
+    orderDecision: ServerOrderDecision;
+    geishaSet?: GeishaSet;
+    setupMode?: RoomSetupMode;
+    customSelection?: CustomCharacterSelection;
+    removedCard?: ItemCard | null;
+    settlement?: {
+        removedCard?: ItemCard | null;
+    };
+};
+
+interface VisibleStateOptions {
+    geishaSet?: GeishaSet;
+}
+
+interface OpeningDealInputStep {
+    playerId: string;
+}
+
+interface OpeningDealOptions {
+    sequenceId?: string;
+    status?: 'pending' | 'completed' | 'not_replayable';
+    replayable?: boolean;
+}
+
+const isGeishaSet = (value: unknown): value is GeishaSet => (
+    SUPPORTED_GEISHA_SETS.includes(value as GeishaSet)
+);
+
+const isRoomSetupMode = (value: unknown): value is RoomSetupMode => (
+    ROOM_SETUP_MODES.includes(value as RoomSetupMode)
+);
+
+const resolveAssetUrl = (assetPath?: string): string => {
     if (!assetPath) {
         return '';
     }
@@ -22,10 +117,10 @@ const resolveAssetUrl = (assetPath) => {
 };
 
 export const charmPointsDistribution = [2, 2, 2, 3, 3, 4, 5];
-export const DEFAULT_GEISHA_SET = 'default';
-export const SUPPORTED_GEISHA_SETS = ['default', 'collaboration', 'hololive'];
-export const ROOM_SETUP_MODES = ['random', 'custom'];
-export const DEFAULT_ROOM_SETUP_MODE = 'random';
+export const DEFAULT_GEISHA_SET: GeishaSet = 'default';
+export const SUPPORTED_GEISHA_SETS: readonly GeishaSet[] = ['default', 'collaboration', 'hololive'];
+export const ROOM_SETUP_MODES: readonly RoomSetupMode[] = ['random', 'custom'];
+export const DEFAULT_ROOM_SETUP_MODE: RoomSetupMode = 'random';
 export const CUSTOM_SELECTION_SIZE = 7;
 
 export const characterPoolsBySet = characterProfilesBySet;
@@ -33,7 +128,7 @@ export const ginzaCharacterPool = characterPoolsBySet.default;
 export const collaborationCharacterPool = characterPoolsBySet.collaboration;
 export const hololiveCharacterPool = characterPoolsBySet.hololive;
 
-export const geishaSetMetadata = {
+export const geishaSetMetadata: Record<GeishaSet, { key: GeishaSet; label: string }> = {
     default: {
         key: 'default',
         label: 'Ginza'
@@ -48,7 +143,7 @@ export const geishaSetMetadata = {
     }
 };
 
-export const ginzaBoardSlotDefinitions = [
+export const ginzaBoardSlotDefinitions: BoardSlotDefinition[] = [
     {
         slotId: 1,
         slotOrder: 0,
@@ -114,8 +209,8 @@ export const ginzaBoardSlotDefinitions = [
     }
 ];
 
-const defaultRandomSource = {
-    nextInt(maxExclusive) {
+const defaultRandomSource: RandomSource = {
+    nextInt(maxExclusive: number) {
         return Math.floor(Math.random() * maxExclusive);
     },
     nextToken() {
@@ -123,19 +218,19 @@ const defaultRandomSource = {
     }
 };
 
-const normalizeRandomSource = (randomSource = {}) => ({
+const normalizeRandomSource = (randomSource: PartialRandomSource = {}): RandomSource => ({
     nextInt: typeof randomSource.nextInt === 'function'
-        ? (maxExclusive) => randomSource.nextInt(maxExclusive)
+        ? (maxExclusive: number) => randomSource.nextInt?.(maxExclusive) ?? defaultRandomSource.nextInt(maxExclusive)
         : (maxExclusive) => defaultRandomSource.nextInt(maxExclusive),
     nextToken: typeof randomSource.nextToken === 'function'
-        ? () => randomSource.nextToken()
+        ? () => randomSource.nextToken?.() ?? defaultRandomSource.nextToken()
         : () => defaultRandomSource.nextToken()
 });
 
-export const createDeterministicRandomSource = (sequence = []) => {
+export const createDeterministicRandomSource = (sequence: number[] = []): RandomSource => {
     let cursor = 0;
     return {
-        nextInt(maxExclusive) {
+        nextInt(maxExclusive: number) {
             const raw = sequence.length > 0 ? sequence[cursor % sequence.length] : 0;
             cursor += 1;
             return Math.abs(raw) % maxExclusive;
@@ -148,7 +243,7 @@ export const createDeterministicRandomSource = (sequence = []) => {
     };
 };
 
-const shuffleArray = (array, randomSource = defaultRandomSource) => {
+const shuffleArray = <T>(array: T[], randomSource: PartialRandomSource = defaultRandomSource): T[] => {
     const source = normalizeRandomSource(randomSource);
     const result = [...array];
     for (let i = result.length - 1; i > 0; i -= 1) {
@@ -158,41 +253,41 @@ const shuffleArray = (array, randomSource = defaultRandomSource) => {
     return result;
 };
 
-export const normalizeGeishaSet = (setKey = DEFAULT_GEISHA_SET) => (
+export const normalizeGeishaSet = (setKey: unknown = DEFAULT_GEISHA_SET): GeishaSet | string => (
     setKey === undefined || setKey === null
         ? DEFAULT_GEISHA_SET
-        : setKey
+        : String(setKey)
 );
 
-export const isSupportedGeishaSet = (setKey = DEFAULT_GEISHA_SET) => {
+export const isSupportedGeishaSet = (setKey: unknown = DEFAULT_GEISHA_SET): boolean => {
     const activeSet = normalizeGeishaSet(setKey);
-    const characterPool = characterPoolsBySet[activeSet];
-    return SUPPORTED_GEISHA_SETS.includes(activeSet) && Array.isArray(characterPool) && characterPool.length >= 7;
+    const characterPool = isGeishaSet(activeSet) ? characterPoolsBySet[activeSet] : undefined;
+    return isGeishaSet(activeSet) && Array.isArray(characterPool) && characterPool.length >= 7;
 };
 
-export const normalizeRoomSetupMode = (setupMode = DEFAULT_ROOM_SETUP_MODE) => {
+export const normalizeRoomSetupMode = (setupMode: unknown = DEFAULT_ROOM_SETUP_MODE): RoomSetupMode => {
     if (setupMode === undefined || setupMode === null || setupMode === '') {
         return DEFAULT_ROOM_SETUP_MODE;
     }
-    if (!ROOM_SETUP_MODES.includes(setupMode)) {
+    if (!isRoomSetupMode(setupMode)) {
         throw new Error(`Unsupported room setup mode: ${String(setupMode)}`);
     }
     return setupMode;
 };
 
-export const getCharacterPoolForSet = (setKey = DEFAULT_GEISHA_SET) => {
+export const getCharacterPoolForSet = (setKey: unknown = DEFAULT_GEISHA_SET): CharacterProfile[] => {
     const activeSet = normalizeGeishaSet(setKey);
-    if (!SUPPORTED_GEISHA_SETS.includes(activeSet)) {
+    if (!isGeishaSet(activeSet)) {
         throw new Error(`Unsupported geisha set: ${activeSet}`);
     }
     return characterPoolsBySet[activeSet];
 };
 
 export const validateCustomCharacterSelection = (
-    setKey = DEFAULT_GEISHA_SET,
-    customSelection = {},
-    options = {}
-) => {
+    setKey: unknown = DEFAULT_GEISHA_SET,
+    customSelection: Partial<CustomCharacterSelection> = {},
+    options: CustomSelectionValidationOptions = {}
+): CustomCharacterSelection => {
     const activeSet = normalizeGeishaSet(setKey);
     const characterPool = options.characterPool ?? getCharacterPoolForSet(activeSet);
     validateCharacterSetData(activeSet, characterPool);
@@ -206,7 +301,7 @@ export const validateCustomCharacterSelection = (
     }
 
     const validCharacterIds = new Set(characterPool.map((character) => character.characterId));
-    const uniqueCharacterIds = new Set();
+    const uniqueCharacterIds = new Set<string>();
     characterIds.forEach((characterId) => {
         if (typeof characterId !== 'string' || !characterId.trim()) {
             throw new Error('Custom character selection contains an invalid characterId.');
@@ -226,9 +321,9 @@ export const validateCustomCharacterSelection = (
 };
 
 export const resolveRestorableGeishaSet = (
-    snapshot = {},
-    options = {}
-) => {
+    snapshot: RestorableSnapshot = {},
+    options: RestorableSetOptions = {}
+): GeishaSet | string => {
     const {
         isSupportedSet = isSupportedGeishaSet
     } = options;
@@ -244,7 +339,7 @@ export const resolveRestorableGeishaSet = (
     return activeSet;
 };
 
-export const validateMatchBoardForSet = (setKey = DEFAULT_GEISHA_SET, geishas = []) => {
+export const validateMatchBoardForSet = (setKey: unknown = DEFAULT_GEISHA_SET, geishas: Geisha[] = []): void => {
     const activeSet = normalizeGeishaSet(setKey);
     const characterPool = getCharacterPoolForSet(activeSet);
     const validCharacterIds = new Set(characterPool.map((character) => character.characterId));
@@ -253,8 +348,8 @@ export const validateMatchBoardForSet = (setKey = DEFAULT_GEISHA_SET, geishas = 
         throw new Error(`Match board for ${activeSet} must contain exactly seven geishas.`);
     }
 
-    const boardSlotIds = new Set();
-    const characterIds = new Set();
+    const boardSlotIds = new Set<number>();
+    const characterIds = new Set<string>();
     geishas.forEach((geisha) => {
         if (!geisha?.characterId || !validCharacterIds.has(geisha.characterId)) {
             throw new Error(`Match board for ${activeSet} contains a character outside the selected set.`);
@@ -273,13 +368,13 @@ export const validateMatchBoardForSet = (setKey = DEFAULT_GEISHA_SET, geishas = 
     });
 };
 
-const boardCharacterIdSet = (geishas = []) => new Set(geishas.map((geisha) => geisha.characterId));
+const boardCharacterIdSet = (geishas: Geisha[] = []) => new Set(geishas.map((geisha) => geisha.characterId));
 
 export const validateMatchBoardForCustomSelection = (
-    setKey = DEFAULT_GEISHA_SET,
-    geishas = [],
-    customSelection = {}
-) => {
+    setKey: unknown = DEFAULT_GEISHA_SET,
+    geishas: Geisha[] = [],
+    customSelection: Partial<CustomCharacterSelection> = {}
+): void => {
     const validatedSelection = validateCustomCharacterSelection(setKey, customSelection);
     validateMatchBoardForSet(setKey, geishas);
 
@@ -291,7 +386,10 @@ export const validateMatchBoardForCustomSelection = (
     });
 };
 
-export const sanitizePendingInteractionForViewer = (pendingInteraction, viewerId) => {
+export const sanitizePendingInteractionForViewer = (
+    pendingInteraction: PendingInteraction | null | undefined,
+    viewerId: string
+): PendingInteraction | null => {
     if (!pendingInteraction) {
         return null;
     }
@@ -321,21 +419,25 @@ export const sanitizePendingInteractionForViewer = (pendingInteraction, viewerId
     return null;
 };
 
-const createHiddenCard = (prefix, index) => ({
+const createHiddenCard = (prefix: string, index: number): ItemCard => ({
     id: `hidden-${prefix}-${index}`,
     geishaId: 0,
     type: 'hidden'
 });
 
-const createHiddenCards = (count, prefix) => Array.from({ length: count }, (_, index) => createHiddenCard(prefix, index));
+const createHiddenCards = (count: number, prefix: string): ItemCard[] => Array.from({ length: count }, (_, index) => createHiddenCard(prefix, index));
 
-export const buildPlayerVisibleGameState = (gameState, viewerId, options = {}) => {
+export const buildPlayerVisibleGameState = (
+    gameState: ServerGameState | null | undefined,
+    viewerId: string,
+    options: VisibleStateOptions = {}
+): ServerGameState | null => {
     if (!gameState) {
         return null;
     }
 
     const activeGeishaSet = gameState.geishaSet ?? options.geishaSet ?? DEFAULT_GEISHA_SET;
-    const sanitizedPlayers = (gameState.players ?? []).map((player) => {
+    const sanitizedPlayers = (gameState.players ?? []).map((player): Player => {
         if (player.id === viewerId) {
             return player;
         }
@@ -364,7 +466,10 @@ export const buildPlayerVisibleGameState = (gameState, viewerId, options = {}) =
     };
 };
 
-export const resolveRestorableBoardForSet = (snapshot = {}, setKey = DEFAULT_GEISHA_SET) => {
+export const resolveRestorableBoardForSet = (
+    snapshot: RestorableSnapshot = {},
+    setKey: unknown = DEFAULT_GEISHA_SET
+): Geisha[] => {
     const resolvedBoard = snapshot?.baseGeishas ?? snapshot?.gameState?.geishas;
     const setupMode = normalizeRoomSetupMode(snapshot?.setupMode ?? snapshot?.gameState?.setupMode);
     const customSelection = snapshot?.customSelection ?? snapshot?.gameState?.customSelection;
@@ -383,8 +488,8 @@ export const resolveRestorableBoardForSet = (snapshot = {}, setKey = DEFAULT_GEI
         if (setupMode === 'custom') {
             validateMatchBoardForCustomSelection(setKey, snapshot.gameState.geishas, customSelection);
         }
-        const toBoardIdentity = (geishas) => [...geishas]
-            .sort((left, right) => left.boardSlotId - right.boardSlotId)
+        const toBoardIdentity = (geishas: Geisha[]) => [...geishas]
+            .sort((left, right) => (left.boardSlotId ?? 0) - (right.boardSlotId ?? 0))
             .map((geisha) => `${geisha.characterId}:${geisha.boardSlotId}`)
             .join('|');
         const baseIdentity = toBoardIdentity(snapshot.baseGeishas);
@@ -397,16 +502,19 @@ export const resolveRestorableBoardForSet = (snapshot = {}, setKey = DEFAULT_GEI
     return resolvedBoard;
 };
 
-export const validateCharacterSetData = (setKey = DEFAULT_GEISHA_SET, characterPool = getCharacterPoolForSet(setKey)) => {
+export const validateCharacterSetData = (
+    setKey: unknown = DEFAULT_GEISHA_SET,
+    characterPool: CharacterProfile[] = getCharacterPoolForSet(setKey)
+): void => {
     const activeSet = normalizeGeishaSet(setKey);
-    if (!SUPPORTED_GEISHA_SETS.includes(activeSet)) {
+    if (!isGeishaSet(activeSet)) {
         throw new Error(`Unsupported geisha set: ${activeSet}`);
     }
     if (!Array.isArray(characterPool) || characterPool.length < 7) {
         throw new Error(`Geisha character pool for ${activeSet} must contain at least seven characters.`);
     }
 
-    const characterIds = new Set();
+    const characterIds = new Set<string>();
     characterPool.forEach((character) => {
         if (!character?.characterId || !character?.name || !character?.imageUrl) {
             throw new Error(`Geisha character records for ${activeSet} must include characterId, name, and imageUrl.`);
@@ -418,16 +526,19 @@ export const validateCharacterSetData = (setKey = DEFAULT_GEISHA_SET, characterP
     });
 };
 
-export const validateGinzaSetupData = (characterPool = ginzaCharacterPool, boardSlots = ginzaBoardSlotDefinitions) => {
+export const validateGinzaSetupData = (
+    characterPool: CharacterProfile[] = ginzaCharacterPool,
+    boardSlots: BoardSlotDefinition[] = ginzaBoardSlotDefinitions
+): void => {
     validateCharacterSetData(DEFAULT_GEISHA_SET, characterPool);
 
     if (!Array.isArray(boardSlots) || boardSlots.length !== 7) {
         throw new Error('Ginza board slot definitions must contain exactly seven entries.');
     }
 
-    const slotIds = new Set();
-    const slotOrders = new Set();
-    const charms = [];
+    const slotIds = new Set<number>();
+    const slotOrders = new Set<number>();
+    const charms: number[] = [];
 
     boardSlots.forEach((slot) => {
         if (
@@ -458,7 +569,7 @@ export const validateGinzaSetupData = (characterPool = ginzaCharacterPool, board
     }
 };
 
-const createGeishasForSet = (setKey = DEFAULT_GEISHA_SET, options = {}) => {
+const createGeishasForSet = (setKey: unknown = DEFAULT_GEISHA_SET, options: GeishaCreationOptions = {}): Geisha[] => {
     const {
         randomSource = defaultRandomSource,
         characterPool = getCharacterPoolForSet(setKey),
@@ -470,9 +581,15 @@ const createGeishasForSet = (setKey = DEFAULT_GEISHA_SET, options = {}) => {
     validateCharacterSetData(activeSet, characterPool);
     validateGinzaSetupData(characterPool, boardSlots);
 
-    const selectedCharacters = selectedCharacterIds
+    const selectedCharacters: CharacterProfile[] = selectedCharacterIds
         ? validateCustomCharacterSelection(activeSet, { characterIds: selectedCharacterIds }, { characterPool }).characterIds
-            .map((characterId) => characterPool.find((character) => character.characterId === characterId))
+            .map((characterId) => {
+                const character = characterPool.find((candidate) => candidate.characterId === characterId);
+                if (!character) {
+                    throw new Error(`Custom character selection contains a missing character: ${characterId}`);
+                }
+                return character;
+            })
         : shuffleArray(characterPool, randomSource).slice(0, 7);
     const boardCharacters = shuffleArray(selectedCharacters, randomSource);
     const orderedSlots = [...boardSlots].sort((a, b) => a.slotOrder - b.slotOrder);
@@ -491,15 +608,15 @@ const createGeishasForSet = (setKey = DEFAULT_GEISHA_SET, options = {}) => {
     });
 };
 
-export const createBaseGeishas = (setKey = DEFAULT_GEISHA_SET, options = {}) => createGeishasForSet(setKey, options);
+export const createBaseGeishas = (setKey: unknown = DEFAULT_GEISHA_SET, options: GeishaCreationOptions = {}): Geisha[] => createGeishasForSet(setKey, options);
 
-export const createRandomizedGeishas = (setKey = DEFAULT_GEISHA_SET, options = {}) => createBaseGeishas(setKey, options);
+export const createRandomizedGeishas = (setKey: unknown = DEFAULT_GEISHA_SET, options: GeishaCreationOptions = {}): Geisha[] => createBaseGeishas(setKey, options);
 
 export const createCustomSelectedGeishas = (
-    setKey = DEFAULT_GEISHA_SET,
-    customSelection = {},
-    options = {}
-) => {
+    setKey: unknown = DEFAULT_GEISHA_SET,
+    customSelection: Partial<CustomCharacterSelection> = {},
+    options: GeishaCreationOptions & CustomSelectionValidationOptions = {}
+): Geisha[] => {
     const validatedSelection = validateCustomCharacterSelection(setKey, customSelection, options);
     return createBaseGeishas(setKey, {
         ...options,
@@ -507,11 +624,11 @@ export const createCustomSelectedGeishas = (
     });
 };
 
-export const cloneGeishas = (geishas = []) => geishas.map((geisha) => ({ ...geisha }));
+export const cloneGeishas = (geishas: Geisha[] = []): Geisha[] => geishas.map((geisha) => ({ ...geisha }));
 
-export const cloneGeishasForNextRound = (geishas = []) => geishas.map((geisha) => ({ ...geisha }));
+export const cloneGeishasForNextRound = (geishas: Geisha[] = []): Geisha[] => geishas.map((geisha) => ({ ...geisha }));
 
-export const createPlayer = (playerId, meta = {}) => ({
+export const createPlayer = (playerId: string, meta: PlayerMeta = {}): Player => ({
     id: playerId,
     name: meta.name ?? playerId,
     lineUserId: meta.lineUserId,
@@ -533,12 +650,12 @@ export const createPlayer = (playerId, meta = {}) => ({
 });
 
 export const createWaitingGameState = (
-    gameId,
-    playerIds,
-    geishas,
-    geishaSet = DEFAULT_GEISHA_SET,
-    playerMetaMap = {}
-) => {
+    gameId: string,
+    playerIds: string[],
+    geishas?: Geisha[] | null,
+    geishaSet: unknown = DEFAULT_GEISHA_SET,
+    playerMetaMap: PlayerMetaMap = {}
+): ServerGameState => {
     const activeGeishaSet = normalizeGeishaSet(geishaSet);
     if (!isSupportedGeishaSet(activeGeishaSet)) {
         throw new Error(`Unsupported geisha set in waiting state: ${String(activeGeishaSet)}`);
@@ -549,7 +666,7 @@ export const createWaitingGameState = (
         hostId: null,
         players: playerIds.map((id) => createPlayer(id, playerMetaMap[id])),
         geishas: cloneGeishas(geishas ?? createBaseGeishas(activeGeishaSet)),
-        geishaSet: activeGeishaSet,
+        geishaSet: activeGeishaSet as GeishaSet,
         currentPlayer: 0,
         phase: 'waiting',
         round: 1,
@@ -574,12 +691,12 @@ export const createWaitingGameState = (
 };
 
 export const createGameStateWithOrder = (
-    gameId,
-    orderedPlayerIds,
-    geishas,
-    existingState = null,
-    playerMetaMap = {}
-) => {
+    gameId: string,
+    orderedPlayerIds: string[],
+    geishas?: Geisha[] | null,
+    existingState: Partial<ServerGameState> | null = null,
+    playerMetaMap: PlayerMetaMap = {}
+): { gameState: ServerGameState } => {
     const previousState = existingState ?? {};
     const activeGeishaSet = normalizeGeishaSet(previousState.geishaSet);
     if (!isSupportedGeishaSet(activeGeishaSet)) {
@@ -605,7 +722,7 @@ export const createGameStateWithOrder = (
             hostId: previousState.hostId ?? null,
             players,
             geishas: cloneGeishas(baseGeishas),
-            geishaSet: activeGeishaSet,
+            geishaSet: activeGeishaSet as GeishaSet,
             currentPlayer: 0,
             phase: 'playing',
             round: previousState.round ?? 1,
@@ -633,7 +750,11 @@ export const createGameStateWithOrder = (
     };
 };
 
-const buildGinzaCardForGeisha = (geisha, copy, randomSource = defaultRandomSource) => {
+const buildGinzaCardForGeisha = (
+    geisha: Geisha,
+    copy: number,
+    randomSource: PartialRandomSource = defaultRandomSource
+): ItemCard => {
     const source = normalizeRandomSource(randomSource);
     const boardSlot = ginzaBoardSlotDefinitions.find((slot) => slot.slotId === geisha.boardSlotId);
     if (!boardSlot) {
@@ -652,10 +773,12 @@ const buildGinzaCardForGeisha = (geisha, copy, randomSource = defaultRandomSourc
     };
 };
 
-export const buildDeckForGeishas = (geishas, options = {}) => {
+export const buildDeckForGeishas = (
+    geishas: Geisha[],
+    options: { randomSource?: PartialRandomSource } = {}
+): { deck: ItemCard[]; removedCard: ItemCard | null } => {
     const { randomSource = defaultRandomSource } = options;
-    /** @type {ItemCard[]} */
-    const cards = [];
+    const cards: ItemCard[] = [];
 
     geishas.forEach((geisha) => {
         const copies = geisha.charmPoints ?? 0;
@@ -676,14 +799,14 @@ export const buildDeckForGeishas = (geishas, options = {}) => {
     };
 };
 
-export const buildOpeningDealSummary = (dealSequence = [], options = {}) => {
+export const buildOpeningDealSummary = (dealSequence: OpeningDealInputStep[] = [], options: OpeningDealOptions = {}): OpeningDealSummary => {
     const {
         sequenceId = 'opening-deal',
         status = 'completed',
         replayable = true
     } = options;
-    const cardIndexesByPlayer = new Map();
-    const steps = [
+    const cardIndexesByPlayer = new Map<string, number>();
+    const steps: OpeningDealStep[] = [
         {
             type: 'BURN_HIDDEN_CARD',
             order: 0,
@@ -716,7 +839,7 @@ export const buildOpeningDealSummary = (dealSequence = [], options = {}) => {
     };
 };
 
-export const markOpeningDealNotReplayable = (openingDeal) => {
+export const markOpeningDealNotReplayable = (openingDeal?: OpeningDealSummary): OpeningDealSummary | undefined => {
     if (!openingDeal) {
         return openingDeal;
     }

@@ -1,28 +1,108 @@
-// @ts-nocheck
 import { createClient } from 'redis';
+import type {
+    AccountPersistenceStatus,
+    AccountSyncRequest,
+    AccountSyncResult,
+    LineAccountProfile,
+    MinimalAccountCounters,
+    VerifiedLineIdentity
+} from 'game-shared-types';
 import { backendLogger } from './runtimeLogger.js';
-import { createAchievementStore } from './achievementStore.js';
+import {
+    createAchievementStore,
+    type AchievementMatchCompletionRequest,
+    type AchievementMatchCompletionResult,
+    type AchievementStore
+} from './achievementStore.js';
 
 const REDIS_URL = process.env.REDIS_URL;
 const ACCOUNT_KEY_PREFIX = 'hanamikoji:account:line:';
 const ACCOUNT_COMPLETION_KEY_PREFIX = 'hanamikoji:account:completion:';
 const ACCOUNT_GUEST_NOTICE = '目前以訪客模式繼續，帳號進度暫時不會保存。';
 
-const sanitizeString = (value) => (
+interface KeyValueClient {
+    isOpen?: boolean;
+    connect?: () => Promise<unknown>;
+    get: (key: string) => Promise<string | null>;
+    set: (key: string, value: string) => Promise<unknown>;
+    on?: (event: 'error', listener: (error: unknown) => void) => unknown;
+}
+
+interface AccountStoreOptions {
+    redisUrl?: string;
+    redisClient?: KeyValueClient | null;
+    now?: () => Date;
+    achievementStore?: AchievementStoreLike | null;
+}
+
+interface AccountSyncOptions {
+    trustedIdentity?: boolean;
+}
+
+interface AccountCompletionRecord {
+    completionId: string;
+    processedAt: string;
+    affectedLineUserIds: string[];
+}
+
+interface MatchCompletionPlayer {
+    playerId: string;
+    accountProfile?: Pick<LineAccountProfile, 'lineUserId'> | null;
+    [key: string]: unknown;
+}
+
+interface AccountMatchCompletionRequest {
+    completionId?: string | null;
+    players?: MatchCompletionPlayer[];
+    winner?: string;
+}
+
+interface AccountCounterUpdateRequest {
+    lineUserId?: string | null;
+    won?: boolean;
+    completedAt?: string;
+}
+
+interface AccountMatchCompletionResult {
+    accountProfiles: LineAccountProfile[];
+    achievements: AchievementMatchCompletionResult;
+}
+
+type AchievementStoreLike = Pick<AchievementStore, 'recordMatchCompletion'> & Partial<Omit<AchievementStore, 'recordMatchCompletion'>>;
+
+export interface AccountStore {
+    getPersistenceStatus: () => AccountPersistenceStatus;
+    checkPersistenceStatus: () => Promise<AccountPersistenceStatus>;
+    syncAccount: (request?: AccountSyncRequest | Record<string, unknown>, options?: AccountSyncOptions) => Promise<AccountSyncResult>;
+    syncVerifiedAccount: (request?: AccountSyncRequest) => Promise<AccountSyncResult>;
+    upsertProfile: (request: Pick<AccountSyncRequest, 'verifiedIdentity' | 'profile'>) => Promise<AccountSyncResult>;
+    getProfile: (lineUserId: string) => Promise<LineAccountProfile | undefined>;
+    updateCountersForCompletedGame: (request?: AccountCounterUpdateRequest) => Promise<LineAccountProfile | null>;
+    recordMatchCompletion: (request?: AccountMatchCompletionRequest) => Promise<AccountMatchCompletionResult>;
+    buildPublicAccountProfile: (profile?: LineAccountProfile | null) => LineAccountProfile | undefined;
+    getAchievementSummary: AchievementStore['getAchievementSummary'];
+    acknowledgeNewUnlocks: AchievementStore['acknowledgeNewUnlocks'];
+}
+
+const isRecord = (value: unknown): value is Record<string, unknown> => (
+    typeof value === 'object' && value !== null
+);
+
+const sanitizeString = (value: unknown): string | undefined => (
     typeof value === 'string' && value.trim() ? value.trim() : undefined
 );
 
-const buildAccountKey = (lineUserId) => `${ACCOUNT_KEY_PREFIX}${lineUserId}`;
-const buildAccountCompletionKey = (completionId) => `${ACCOUNT_COMPLETION_KEY_PREFIX}${completionId}`;
+const buildAccountKey = (lineUserId: string) => `${ACCOUNT_KEY_PREFIX}${lineUserId}`;
+const buildAccountCompletionKey = (completionId: string) => `${ACCOUNT_COMPLETION_KEY_PREFIX}${completionId}`;
 
-const createDefaultCounters = () => ({
+const createDefaultCounters = (): MinimalAccountCounters => ({
     gamesPlayed: 0,
     wins: 0,
     lastPlayedAt: null
 });
 
-export const validateVerifiedLineIdentity = (verifiedIdentity) => {
-    if (!verifiedIdentity || typeof verifiedIdentity !== 'object') {
+export const validateVerifiedLineIdentity = (verifiedIdentity: unknown): VerifiedLineIdentity | null => {
+    if (!isRecord(verifiedIdentity)) {
         return null;
     }
 
@@ -48,20 +128,23 @@ export const validateVerifiedLineIdentity = (verifiedIdentity) => {
     };
 };
 
-const normalizeProfileInput = (profile = {}, fallbackDisplayName = '') => {
-    const displayName = sanitizeString(profile.displayName) ?? sanitizeString(fallbackDisplayName);
+const normalizeProfileInput = (
+    profile: AccountSyncRequest['profile'] = {},
+    fallbackDisplayName = ''
+): AccountSyncRequest['profile'] | null => {
+    const displayName = sanitizeString(profile?.displayName) ?? sanitizeString(fallbackDisplayName);
     if (!displayName) {
         return null;
     }
 
-    const avatarUrl = sanitizeString(profile.avatarUrl);
+    const avatarUrl = sanitizeString(profile?.avatarUrl);
     return {
         displayName,
         ...(avatarUrl ? { avatarUrl } : {})
     };
 };
 
-export const buildPublicAccountProfile = (profile) => {
+export const buildPublicAccountProfile = (profile?: LineAccountProfile | null): LineAccountProfile | undefined => {
     if (!profile) {
         return undefined;
     }
@@ -85,13 +168,13 @@ export const createAccountStore = ({
     redisClient = null,
     now = () => new Date(),
     achievementStore = null
-} = {}) => {
-    const memoryProfiles = new Map();
-    const memoryProcessedCompletions = new Map();
+}: AccountStoreOptions = {}): AccountStore => {
+    const memoryProfiles = new Map<string, LineAccountProfile>();
+    const memoryProcessedCompletions = new Map<string, AccountCompletionRecord>();
     let client = redisClient;
-    let storageFailure = null;
+    let storageFailure: unknown = null;
 
-    const getPersistenceStatus = () => {
+    const getPersistenceStatus = (): AccountPersistenceStatus => {
         if (storageFailure) {
             return {
                 mode: 'temporary',
@@ -123,7 +206,7 @@ export const createAccountStore = ({
         };
     };
 
-    const getClient = async () => {
+    const getClient = async (): Promise<KeyValueClient | null> => {
         if (client) {
             if (client.isOpen === false && typeof client.connect === 'function') {
                 try {
@@ -139,7 +222,7 @@ export const createAccountStore = ({
             return null;
         }
 
-        client = createClient({ url: redisUrl });
+        client = createClient({ url: redisUrl }) as unknown as KeyValueClient;
         client.on('error', (error) => {
             backendLogger.error('❌ Account Redis 連線錯誤', {
                 error: error instanceof Error ? error.message : 'unknown'
@@ -159,7 +242,7 @@ export const createAccountStore = ({
         return client;
     };
 
-    const checkPersistenceStatus = async () => {
+    const checkPersistenceStatus = async (): Promise<AccountPersistenceStatus> => {
         if ((redisUrl || client) && client?.isOpen !== true && !storageFailure) {
             try {
                 await getClient();
@@ -171,20 +254,21 @@ export const createAccountStore = ({
         return getPersistenceStatus();
     };
 
-    const activeAchievementStore = achievementStore ?? createAchievementStore({
+    const fallbackAchievementStore = createAchievementStore({
         redisUrl,
         redisClient: client,
         now,
         getPersistenceStatus
     });
+    const activeAchievementStore = achievementStore ?? fallbackAchievementStore;
 
-    const readProfile = async (lineUserId) => {
+    const readProfile = async (lineUserId: string): Promise<LineAccountProfile | null> => {
         const key = buildAccountKey(lineUserId);
         const activeClient = await getClient();
         if (activeClient) {
             try {
                 const raw = await activeClient.get(key);
-                return raw ? JSON.parse(raw) : null;
+                return raw ? JSON.parse(raw) as LineAccountProfile : null;
             } catch (error) {
                 storageFailure = error;
                 throw error;
@@ -193,7 +277,7 @@ export const createAccountStore = ({
         return memoryProfiles.get(lineUserId) ?? null;
     };
 
-    const writeProfile = async (profile) => {
+    const writeProfile = async (profile: LineAccountProfile): Promise<void> => {
         const key = buildAccountKey(profile.lineUserId);
         const activeClient = await getClient();
         if (activeClient) {
@@ -208,12 +292,12 @@ export const createAccountStore = ({
         memoryProfiles.set(profile.lineUserId, profile);
     };
 
-    const readProcessedCompletion = async (completionId) => {
+    const readProcessedCompletion = async (completionId: string): Promise<AccountCompletionRecord | null> => {
         const activeClient = await getClient();
         if (activeClient) {
             try {
                 const raw = await activeClient.get(buildAccountCompletionKey(completionId));
-                return raw ? JSON.parse(raw) : null;
+                return raw ? JSON.parse(raw) as AccountCompletionRecord : null;
             } catch (error) {
                 storageFailure = error;
                 throw error;
@@ -222,7 +306,7 @@ export const createAccountStore = ({
         return memoryProcessedCompletions.get(completionId) ?? null;
     };
 
-    const writeProcessedCompletion = async (record) => {
+    const writeProcessedCompletion = async (record: AccountCompletionRecord): Promise<void> => {
         const activeClient = await getClient();
         if (activeClient) {
             try {
@@ -236,7 +320,7 @@ export const createAccountStore = ({
         memoryProcessedCompletions.set(record.completionId, record);
     };
 
-    const upsertProfile = async ({ verifiedIdentity, profile }) => {
+    const upsertProfile = async ({ verifiedIdentity, profile }: Pick<AccountSyncRequest, 'verifiedIdentity' | 'profile'>): Promise<AccountSyncResult> => {
         const identity = validateVerifiedLineIdentity(verifiedIdentity);
         if (!identity) {
             return {
@@ -257,7 +341,7 @@ export const createAccountStore = ({
 
         const existing = await readProfile(identity.lineUserId);
         const timestamp = now().toISOString();
-        const nextProfile = {
+        const nextProfile: LineAccountProfile = {
             lineUserId: identity.lineUserId,
             displayName: normalizedProfile.displayName,
             ...(normalizedProfile.avatarUrl ? { avatarUrl: normalizedProfile.avatarUrl } : {}),
@@ -279,7 +363,7 @@ export const createAccountStore = ({
         };
     };
 
-    const syncVerifiedAccount = async (request = {}) => {
+    const syncVerifiedAccount = async (request: AccountSyncRequest = {}): Promise<AccountSyncResult> => {
         try {
             return await upsertProfile({
                 verifiedIdentity: request.verifiedIdentity,
@@ -297,7 +381,7 @@ export const createAccountStore = ({
         }
     };
 
-    const syncAccount = async (_request = {}, options = {}) => {
+    const syncAccount = async (_request: AccountSyncRequest | Record<string, unknown> = {}, options: AccountSyncOptions = {}): Promise<AccountSyncResult> => {
         if (!options.trustedIdentity) {
             return {
                 status: 'unverified',
@@ -309,7 +393,11 @@ export const createAccountStore = ({
         return syncVerifiedAccount(_request);
     };
 
-    const updateCountersForCompletedGame = async ({ lineUserId, won, completedAt = now().toISOString() } = {}) => {
+    const updateCountersForCompletedGame = async ({
+        lineUserId,
+        won,
+        completedAt = now().toISOString()
+    }: AccountCounterUpdateRequest = {}): Promise<LineAccountProfile | null> => {
         const normalizedLineUserId = sanitizeString(lineUserId);
         if (!normalizedLineUserId) {
             return null;
@@ -336,7 +424,11 @@ export const createAccountStore = ({
         return buildPublicAccountProfile(nextProfile);
     };
 
-    const recordMatchCompletion = async ({ completionId, players = [], winner } = {}) => {
+    const recordMatchCompletion = async ({
+        completionId,
+        players = [],
+        winner
+    }: AccountMatchCompletionRequest = {}): Promise<AccountMatchCompletionResult> => {
         const completedAt = now().toISOString();
         const normalizedCompletionId = sanitizeString(completionId);
         if (!normalizedCompletionId) {
@@ -345,7 +437,7 @@ export const createAccountStore = ({
                 completedAt,
                 winner,
                 players
-            });
+            } satisfies AchievementMatchCompletionRequest);
             return {
                 accountProfiles: [],
                 achievements: achievementResult
@@ -369,8 +461,8 @@ export const createAccountStore = ({
             };
         }
 
-        const updates = [];
-        const affectedLineUserIds = [];
+        const updates: LineAccountProfile[] = [];
+        const affectedLineUserIds: string[] = [];
         for (const player of players) {
             const lineUserId = player?.accountProfile?.lineUserId;
             if (!lineUserId) {
@@ -391,7 +483,7 @@ export const createAccountStore = ({
             completedAt,
             winner,
             players
-        });
+        } satisfies AchievementMatchCompletionRequest);
 
         await writeProcessedCompletion({
             completionId: normalizedCompletionId,
@@ -411,12 +503,12 @@ export const createAccountStore = ({
         syncAccount,
         syncVerifiedAccount,
         upsertProfile,
-        getProfile: async (lineUserId) => buildPublicAccountProfile(await readProfile(lineUserId)),
+        getProfile: async (lineUserId: string) => buildPublicAccountProfile(await readProfile(lineUserId)),
         updateCountersForCompletedGame,
         recordMatchCompletion,
         buildPublicAccountProfile,
-        getAchievementSummary: activeAchievementStore.getAchievementSummary,
-        acknowledgeNewUnlocks: activeAchievementStore.acknowledgeNewUnlocks
+        getAchievementSummary: activeAchievementStore.getAchievementSummary ?? fallbackAchievementStore.getAchievementSummary,
+        acknowledgeNewUnlocks: activeAchievementStore.acknowledgeNewUnlocks ?? fallbackAchievementStore.acknowledgeNewUnlocks
     };
 };
 

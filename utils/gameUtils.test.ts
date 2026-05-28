@@ -1,4 +1,3 @@
-// @ts-nocheck
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
@@ -188,7 +187,10 @@ test('opening deal summary burns one hidden card and alternates dealt backs', ()
         targetZone: 'hidden-reserve'
     });
     assert.deepEqual(
-        summary.steps.slice(1, 13).map((step) => [step.type, step.targetPlayerId, step.cardIndex]),
+        summary.steps.slice(1, 13).map((step) => {
+            assert.equal(step.type, 'DEAL_CARD_BACK');
+            return [step.type, step.targetPlayerId, step.cardIndex];
+        }),
         [
             ['DEAL_CARD_BACK', 'first', 1],
             ['DEAL_CARD_BACK', 'second', 1],
@@ -260,7 +262,7 @@ test('player-visible active state masks removed card and opponent starting hand'
         removedCard,
         openingDeal: buildOpeningDealSummary(sequence),
         pendingInteraction: null
-    };
+    } as Parameters<typeof buildPlayerVisibleGameState>[0];
 
     const visible = buildPlayerVisibleGameState(state, 'player1');
 
@@ -283,7 +285,7 @@ test('player-visible active state redacts stale settlement removed card', () => 
         removedCard,
         settlement: { removedCard },
         pendingInteraction: null
-    };
+    } as Parameters<typeof buildPlayerVisibleGameState>[0];
 
     const visible = buildPlayerVisibleGameState(state, 'player1');
 
@@ -303,7 +305,7 @@ test('player-visible ended state exposes removed card only through settlement', 
         removedCard,
         settlement: { removedCard },
         pendingInteraction: null
-    };
+    } as Parameters<typeof buildPlayerVisibleGameState>[0];
 
     const visible = buildPlayerVisibleGameState(state, 'player1');
 
@@ -705,7 +707,7 @@ test('pending interactions are fully visible only to the responding player', () 
         { id: 'gift-3', geishaId: 3, type: 'item' }
     ];
     const giftPending = {
-        type: 'GIFT_SELECTION',
+        type: 'GIFT_SELECTION' as const,
         initiatorId: 'player1',
         targetPlayerId: 'player2',
         offeredCards
@@ -721,7 +723,7 @@ test('pending interactions are fully visible only to the responding player', () 
     );
 
     const competitionPending = {
-        type: 'COMPETITION_SELECTION',
+        type: 'COMPETITION_SELECTION' as const,
         initiatorId: 'player1',
         targetPlayerId: 'player2',
         groups: [[offeredCards[0], offeredCards[1]], [offeredCards[2], offeredCards[0]]]
@@ -765,7 +767,7 @@ test('joiner waiting state uses the room creator selected set and generated boar
             createPlayer('player1', { name: 'Host' }),
             createPlayer('player2', { name: 'Joiner' })
         ],
-        geishaSet: 'collaboration',
+        geishaSet: 'collaboration' as const,
         round: 2
     };
     existingState.players[0].actionTokens[0].used = true;

@@ -1,6 +1,7 @@
-// @ts-nocheck
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import type { AccountPersistenceStatus } from 'game-shared-types';
+import type { AchievementMatchCompletionRequest, AchievementStore } from './achievementStore.js';
 import {
     ACHIEVEMENT_CATALOG,
     createAchievementStore
@@ -10,19 +11,19 @@ const durableStatus = {
     mode: 'durable',
     available: true,
     message: 'Account profiles are persistent.'
-};
+} as const;
 
 const temporaryStatus = {
     mode: 'temporary',
     available: true,
     message: 'Account profiles are temporary in this environment.'
-};
+} as const;
 
 const unavailableStatus = {
     mode: 'temporary',
     available: false,
     message: 'Account profiles are unavailable; durable persistence is not connected.'
-};
+} as const;
 
 const fixedClock = (() => {
     let minute = 0;
@@ -33,12 +34,12 @@ const fixedClock = (() => {
     };
 })();
 
-const createStore = (status = durableStatus) => createAchievementStore({
+const createStore = (status: AccountPersistenceStatus = durableStatus) => createAchievementStore({
     now: fixedClock,
     getPersistenceStatus: () => status
 });
 
-const createPlayers = () => [
+const createPlayers = (): AchievementMatchCompletionRequest['players'] => [
     {
         playerId: 'host',
         accountProfile: {
@@ -53,7 +54,12 @@ const createPlayers = () => [
     }
 ];
 
-const record = (store, completionId, winner = 'host', players = createPlayers()) => store.recordMatchCompletion({
+const record = (
+    store: AchievementStore,
+    completionId: string,
+    winner = 'host',
+    players: AchievementMatchCompletionRequest['players'] = createPlayers()
+) => store.recordMatchCompletion({
     completionId,
     completedAt: '2026-05-05T14:00:00.000Z',
     winner,

@@ -1,5 +1,6 @@
-// @ts-nocheck
-export const characterProfilesBySet = {
+import { CharacterProfile, GeishaSet } from 'game-shared-types';
+
+export const characterProfilesBySet: Record<GeishaSet, CharacterProfile[]> = {
     default: [
         {
             characterId: 'ginza-ema',

@@ -1,9 +1,8 @@
-// @ts-nocheck
 import { existsSync, readFileSync } from 'fs';
 
 const LOCAL_ENV_FILE = new URL('../.env.local', import.meta.url);
 
-const parseEnvLine = (line) => {
+const parseEnvLine = (line: string): { key: string; value: string } | null => {
     const trimmed = line.trim();
     if (!trimmed || trimmed.startsWith('#')) {
         return null;
@@ -20,7 +19,7 @@ const parseEnvLine = (line) => {
     return { key, value };
 };
 
-export const loadLocalEnv = () => {
+export const loadLocalEnv = (): void => {
     if (!existsSync(LOCAL_ENV_FILE)) {
         return;
     }

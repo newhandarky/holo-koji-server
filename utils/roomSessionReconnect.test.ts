@@ -1,5 +1,4 @@
-// @ts-nocheck
-import test from 'node:test';
+import test, { type TestContext } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import net from 'node:net';
@@ -10,7 +9,15 @@ import WebSocket from 'ws';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const serverRoot = path.resolve(__dirname, '..');
 
-const getFreePort = async () => new Promise((resolve, reject) => {
+type TestPayload = Record<string, unknown>;
+type TestMessage = {
+    type: string;
+    payload: TestPayload;
+};
+
+const parseTestMessage = (raw: WebSocket.RawData): TestMessage => JSON.parse(raw.toString()) as TestMessage;
+
+const getFreePort = async (): Promise<number> => new Promise((resolve, reject) => {
     const probe = net.createServer();
     probe.once('error', reject);
     probe.listen(0, '127.0.0.1', () => {
@@ -26,9 +33,9 @@ const getFreePort = async () => new Promise((resolve, reject) => {
     });
 });
 
-const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+const delay = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 
-const startServer = async (t) => {
+const startServer = async (t: TestContext): Promise<{ port: number; child: ReturnType<typeof spawn> }> => {
     const port = await getFreePort();
     const child = spawn(process.execPath, ['index.js'], {
         cwd: serverRoot,
@@ -71,24 +78,28 @@ const startServer = async (t) => {
     throw new Error(`Server did not become ready: ${output}`);
 };
 
-const connectClient = async (port) => new Promise((resolve, reject) => {
+const connectClient = async (port: number): Promise<WebSocket> => new Promise((resolve, reject) => {
     const ws = new WebSocket(`ws://127.0.0.1:${port}`);
     ws.once('open', () => resolve(ws));
     ws.once('error', reject);
 });
 
-const sendMessage = (ws, type, payload = {}) => {
+const sendMessage = (ws: WebSocket, type: string, payload: TestPayload = {}) => {
     ws.send(JSON.stringify({ type, payload }));
 };
 
-const waitForMessage = async (ws, type, predicate = () => true) => new Promise((resolve, reject) => {
+const waitForMessage = async (
+    ws: WebSocket,
+    type: string,
+    predicate: (payload: TestPayload) => boolean = () => true
+): Promise<TestPayload> => new Promise((resolve, reject) => {
     const timeout = setTimeout(() => {
         ws.off('message', onMessage);
         reject(new Error(`Timed out waiting for ${type}`));
     }, 3000);
 
-    const onMessage = (raw) => {
-        const message = JSON.parse(raw.toString());
+    const onMessage = (raw: WebSocket.RawData) => {
+        const message = parseTestMessage(raw);
         if (message.type === type && predicate(message.payload)) {
             clearTimeout(timeout);
             ws.off('message', onMessage);
@@ -99,14 +110,14 @@ const waitForMessage = async (ws, type, predicate = () => true) => new Promise((
     ws.on('message', onMessage);
 });
 
-const waitForAnyMessage = async (ws, types) => new Promise((resolve, reject) => {
+const waitForAnyMessage = async (ws: WebSocket, types: string[]): Promise<TestMessage> => new Promise((resolve, reject) => {
     const timeout = setTimeout(() => {
         ws.off('message', onMessage);
         reject(new Error(`Timed out waiting for ${types.join(' or ')}`));
     }, 5000);
 
-    const onMessage = (raw) => {
-        const message = JSON.parse(raw.toString());
+    const onMessage = (raw: WebSocket.RawData) => {
+        const message = parseTestMessage(raw);
         if (types.includes(message.type)) {
             clearTimeout(timeout);
             ws.off('message', onMessage);
@@ -133,11 +144,12 @@ test('rejects same-player joins without matching room session token', async (t) 
     });
 
     const created = await waitForMessage(host, 'ROOM_CREATED');
-    assert.equal(typeof created.roomSessionToken, 'string');
-    assert.ok(created.roomSessionToken.length >= 16);
+    const createdRoom = created as { roomId: string; roomSessionToken: string };
+    assert.equal(typeof createdRoom.roomSessionToken, 'string');
+    assert.ok(createdRoom.roomSessionToken.length >= 16);
 
     sendMessage(intruder, 'JOIN_ROOM', {
-        roomId: created.roomId,
+        roomId: createdRoom.roomId,
         playerId: 'host',
         displayName: 'Impostor'
     });
@@ -161,9 +173,10 @@ test('reattaches an active player with a matching room session token after disco
         displayName: 'Host'
     });
     const created = await waitForMessage(host, 'ROOM_CREATED');
+    const createdRoom = created as { roomId: string; roomSessionToken: string };
 
     sendMessage(joiner, 'JOIN_ROOM', {
-        roomId: created.roomId,
+        roomId: createdRoom.roomId,
         playerId: 'guest',
         displayName: 'Guest'
     });
@@ -179,14 +192,15 @@ test('reattaches an active player with a matching room session token after disco
     });
 
     sendMessage(reconnectedHost, 'JOIN_ROOM', {
-        roomId: created.roomId,
+        roomId: createdRoom.roomId,
         playerId: 'host',
         displayName: 'Host',
-        roomSessionToken: created.roomSessionToken
+        roomSessionToken: createdRoom.roomSessionToken
     });
 
     const message = await waitForAnyMessage(reconnectedHost, ['GAME_STATE_UPDATED', 'ERROR']);
     assert.equal(message.type, 'GAME_STATE_UPDATED');
-    assert.equal(message.payload.players.some((player) => player.id === 'host'), true);
+    const players = message.payload.players as Array<{ id: string }>;
+    assert.equal(players.some((player) => player.id === 'host'), true);
     assert.notEqual(message.payload.phase, 'waiting');
 });

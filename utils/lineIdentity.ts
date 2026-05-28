@@ -1,14 +1,28 @@
-// @ts-nocheck
+import { AccountSyncRequest } from 'game-shared-types';
 import { backendLogger } from './runtimeLogger.js';
 
 const LINE_VERIFY_ID_TOKEN_URL = 'https://api.line.me/oauth2/v2.1/verify';
 const LINE_TOKEN_URL = 'https://api.line.me/oauth2/v2.1/token';
 
-const sanitizeString = (value) => (
+interface LineVerifiedProfile {
+    sub?: string;
+    aud?: string;
+    name?: string;
+    picture?: string;
+}
+
+interface LineTokenPayload {
+    id_token?: string;
+}
+
+const sanitizeString = (value: unknown): string | undefined => (
     typeof value === 'string' && value.trim() ? value.trim() : undefined
 );
 
-const buildVerifiedIdentity = (verifiedProfile, source) => {
+const buildVerifiedIdentity = (
+    verifiedProfile: LineVerifiedProfile,
+    source: AccountSyncRequest['verifiedIdentity']['source']
+): AccountSyncRequest | null => {
     const lineUserId = sanitizeString(verifiedProfile?.sub);
     if (!lineUserId) {
         return null;
@@ -28,7 +42,7 @@ const buildVerifiedIdentity = (verifiedProfile, source) => {
     };
 };
 
-const verifyIdToken = async (idToken) => {
+const verifyIdToken = async (idToken: string): Promise<LineVerifiedProfile> => {
     const lineChannelId = sanitizeString(process.env.LINE_CHANNEL_ID);
     if (!lineChannelId) {
         throw new Error('LINE_CHANNEL_ID is not configured');
@@ -51,7 +65,7 @@ const verifyIdToken = async (idToken) => {
         throw new Error(`LINE ID token verification failed: ${response.status}`);
     }
 
-    const verifiedProfile = await response.json();
+    const verifiedProfile = await response.json() as LineVerifiedProfile;
     if (verifiedProfile?.aud !== lineChannelId) {
         throw new Error('LINE ID token audience mismatch');
     }
@@ -59,7 +73,13 @@ const verifyIdToken = async (idToken) => {
     return verifiedProfile;
 };
 
-const exchangeAuthorizationCode = async ({ authorizationCode, redirectUri }) => {
+const exchangeAuthorizationCode = async ({
+    authorizationCode,
+    redirectUri
+}: {
+    authorizationCode: string;
+    redirectUri: string;
+}): Promise<string> => {
     const lineChannelId = sanitizeString(process.env.LINE_CHANNEL_ID);
     const lineChannelSecret = sanitizeString(process.env.LINE_CHANNEL_SECRET);
     if (!lineChannelId || !lineChannelSecret) {
@@ -86,7 +106,7 @@ const exchangeAuthorizationCode = async ({ authorizationCode, redirectUri }) => 
         throw new Error(`LINE authorization code exchange failed: ${response.status}`);
     }
 
-    const tokenPayload = await response.json();
+    const tokenPayload = await response.json() as LineTokenPayload;
     const idToken = sanitizeString(tokenPayload?.id_token);
     if (!idToken) {
         throw new Error('LINE token response did not include id_token');
@@ -95,7 +115,7 @@ const exchangeAuthorizationCode = async ({ authorizationCode, redirectUri }) => 
     return idToken;
 };
 
-export const resolveVerifiedLineAccountRequest = async (payload = {}) => {
+export const resolveVerifiedLineAccountRequest = async (payload: AccountSyncRequest = {}): Promise<AccountSyncRequest | null> => {
     try {
         const idToken = sanitizeString(payload.idToken);
         if (idToken) {
