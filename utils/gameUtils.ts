@@ -69,7 +69,7 @@ type ServerOrderDecision = Omit<GameState['orderDecision'], 'currentPlayer'> & {
     currentPlayer?: string;
 };
 
-type ServerGameState = Omit<GameState, 'removedCard' | 'settlement' | 'orderDecision' | 'winner'> & {
+export type ServerGameState = Omit<GameState, 'removedCard' | 'settlement' | 'orderDecision' | 'winner'> & {
     hostId?: string | null;
     orderDecision: ServerOrderDecision;
     geishaSet?: GeishaSet;

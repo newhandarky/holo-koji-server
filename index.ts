@@ -1,10 +1,8 @@
 // server/index.js - 添加隨機順序決定功能
 import './utils/localEnv.js';
 import { randomBytes } from 'node:crypto';
-import express from 'express';
 import { createServer, type IncomingMessage } from 'http';
 import { WebSocketServer, type RawData, type WebSocket } from 'ws';
-import cors from 'cors';
 import type {
     AccountSyncRequest,
     ActionType,
@@ -36,9 +34,8 @@ import {
     isSupportedGeishaSet,
     normalizeGeishaSet,
     normalizeRoomSetupMode,
-    resolveRestorableBoardForSet,
-    resolveRestorableGeishaSet,
-    sanitizePendingInteractionForViewer
+    sanitizePendingInteractionForViewer,
+    type ServerGameState
 } from './utils/gameUtils.js';
 import {
     deleteRoomSnapshot,
@@ -52,7 +49,6 @@ import {
     summarizeWebSocketMessage
 } from './utils/runtimeLogger.js';
 import {
-    buildRestoredRoomSeats,
     createDisconnectedSocket,
     createNpcSocket,
     serializeRoomSeat,
@@ -61,6 +57,20 @@ import {
 } from './utils/roomSession.js';
 import { accountStore } from './utils/accountStore.js';
 import { resolveVerifiedLineAccountRequest } from './utils/lineIdentity.js';
+import { createHttpApp } from './http/app.js';
+import { createRoomRegistry } from './rooms/roomRegistry.js';
+import {
+    CUSTOM_SELECTION_ERROR_MESSAGE,
+    GEISHA_SET_CONFIG_ERROR_MESSAGE,
+    LEGACY_GEISHA_SET_ERROR_MESSAGE,
+    PLAYER_ID_TAKEN_ERROR_MESSAGE
+} from './rooms/roomErrors.js';
+import {
+    normalizeCustomSelection,
+    restoreRoomFromSnapshot,
+    type RestorableRoomLike,
+    type RestorableRoomSnapshot
+} from './rooms/roomRestore.js';
 
 // NPC 設定（難度與思考時間）
 const NPC_DIFFICULTY_LABEL = {
@@ -131,7 +141,6 @@ type GameRoomPlayer = RoomSeat & {
     sessionToken?: string;
 };
 
-type ServerGameState = ReturnType<typeof createWaitingGameState>;
 type GamePlayer = ServerGameState['players'][number];
 type GameActionPayload = {
     type?: unknown;
@@ -151,21 +160,6 @@ type ServerAction = {
 type CompetitionGroupIds = [string[], string[]] | string[][];
 type NpcSnapshotEntry = { npc: number; opp: number; charm: number };
 type NpcSnapshot = Map<number, NpcSnapshotEntry>;
-type RestorableRoomSnapshot = Parameters<typeof resolveRestorableBoardForSet>[0] & {
-    roomId?: string;
-    hostId?: string | null;
-    npcId?: string | null;
-    npcDifficulty?: NpcDifficulty | null;
-    createdAt?: number;
-    matchCompletionCounter?: unknown;
-    currentCompletionId?: unknown;
-};
-
-type RestoredRoomResult = {
-    room: GameRoom | null;
-    errorMessage: string | null;
-};
-
 const toStringArray = (value: unknown): string[] => (
     Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string') : []
 );
@@ -180,12 +174,6 @@ const isRecord = (value: unknown): value is JsonObject => (
     Boolean(value) && typeof value === 'object' && !Array.isArray(value)
 );
 
-const normalizeCustomSelection = (value: unknown): CustomCharacterSelection | null => (
-    isRecord(value) && Array.isArray(value.characterIds)
-        ? { characterIds: value.characterIds.filter((item): item is string => typeof item === 'string') }
-        : null
-);
-
 const getMessagePayload = (message: Partial<ClientToServerMessage> & { payload?: unknown }): unknown => (
     message.payload
 );
@@ -196,12 +184,6 @@ const normalizeNpcDifficulty = (difficulty: unknown): NpcDifficulty => {
     }
     return 'easy';
 };
-
-const LEGACY_GEISHA_SET_ERROR_MESSAGE = '不支援舊版藝妓組合資料，請重新建立對戰。';
-const LEGACY_ROOM_SNAPSHOT_ERROR_MESSAGE = '房間資料無效，請重新建立對戰。';
-const GEISHA_SET_CONFIG_ERROR_MESSAGE = '角色組合資料設定錯誤，請重新建立對戰。';
-const CUSTOM_SELECTION_ERROR_MESSAGE = '自訂角色選擇無效，請重新選擇七位同組合角色。';
-const PLAYER_ID_TAKEN_ERROR_MESSAGE = '此玩家名稱已在房間中使用，請重新加入或更換名稱。';
 
 const createRoomSessionToken = (): string => randomBytes(24).toString('hex');
 
@@ -235,49 +217,16 @@ const normalizePlayerMeta = (playerId: string, payload: PlayerMetaPayload = {}):
     };
 };
 
-// 建立 Express 與 HTTP 伺服器
-const app = express();
+// 建立 Express app 與 HTTP 伺服器
+const app = createHttpApp();
 const server = createServer(app);
 
-// CORS 設定（允許前端來源）
-app.use(cors({
-    origin: [
-        'http://localhost:3000',
-        'https://holo-koji-frontend.onrender.com',
-        'https://newhandarky.github.io',
-        'https://newhandarky.github.io/holo-koji',
-        'https://newhandarky.github.io/holo-koji/'
-    ],
-    credentials: true,
-    methods: ['GET', 'POST', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Authorization']
-}));
-
-// JSON 解析中介層
-app.use(express.json());
-
-// 健康檢查端點
-app.get('/health', (req, res) => {
-    res.json({
-        status: 'ok',
-        environment: process.env.NODE_ENV,
-        timestamp: new Date().toISOString(),
-        corsOrigins: [
-            'http://localhost:3000',
-            'https://holo-koji-frontend.onrender.com',
-            'https://newhandarky.github.io',
-            'https://newhandarky.github.io/holo-koji',
-            'https://newhandarky.github.io/holo-koji/'
-        ]
-    });
-});
-
 // 房間管理表（roomId → GameRoom）
-const gameRooms = new Map<string, GameRoom>();
+const gameRooms = createRoomRegistry<GameRoom>();
 // WebSocket 伺服器實體
 const wss = new WebSocketServer({ server });
 
-class GameRoom {
+class GameRoom implements RestorableRoomLike {
     roomId: string;
     createdAt: number;
     players: GameRoomPlayer[];
@@ -2658,61 +2607,6 @@ class GameRoom {
     }
 }
 
-// 由 Redis 快照還原房間（只重建必要狀態）
-const restoreRoomFromSnapshot = (snapshot: RestorableRoomSnapshot | null): RestoredRoomResult => {
-    if (!snapshot?.roomId) {
-        return { room: null, errorMessage: LEGACY_ROOM_SNAPSHOT_ERROR_MESSAGE };
-    }
-
-    let snapshotGeishaSet: GeishaSet = DEFAULT_GEISHA_SET;
-    let resolvedBoard: Geisha[] | null = null;
-    try {
-        snapshotGeishaSet = resolveRestorableGeishaSet(snapshot) as GeishaSet;
-        resolvedBoard = resolveRestorableBoardForSet(snapshot, snapshotGeishaSet);
-    } catch (_error) {
-        return { room: null, errorMessage: LEGACY_ROOM_SNAPSHOT_ERROR_MESSAGE };
-    }
-
-    const room = new GameRoom(snapshot.roomId);
-    room.hostId = snapshot.hostId ?? null;
-    room.geishaSet = snapshotGeishaSet;
-    room.setupMode = normalizeRoomSetupMode(snapshot.setupMode ?? snapshot.gameState?.setupMode);
-    const restoredCustomSelection = normalizeCustomSelection(snapshot.customSelection ?? snapshot.gameState?.customSelection);
-    room.customSelection = room.setupMode === 'custom'
-        ? restoredCustomSelection
-        : null;
-    room.npcId = snapshot.npcId ?? null;
-    room.npcDifficulty = snapshot.npcDifficulty ?? null;
-    room.createdAt = typeof snapshot.createdAt === 'number' && Number.isSafeInteger(snapshot.createdAt)
-        ? snapshot.createdAt
-        : Date.now();
-    room.matchCompletionCounter = typeof snapshot.matchCompletionCounter === 'number' && Number.isSafeInteger(snapshot.matchCompletionCounter)
-        ? snapshot.matchCompletionCounter
-        : 0;
-    room.currentCompletionId = typeof snapshot.currentCompletionId === 'string'
-        ? snapshot.currentCompletionId
-        : null;
-    room.baseGeishas = resolvedBoard;
-    room.gameState = snapshot.gameState as ServerGameState | null ?? null;
-
-    room.players = buildRestoredRoomSeats(snapshot as Parameters<typeof buildRestoredRoomSeats>[0]);
-    if (room.npcId) {
-        const npcSeat = room.players.find((player) => player.playerId === room.npcId);
-        if (npcSeat) {
-            npcSeat.isNpc = true;
-            npcSeat.ws = createNpcSocket();
-        } else {
-            room.players.push({ playerId: room.npcId, ws: createNpcSocket(), isNpc: true, name: room.npcId });
-        }
-    }
-
-    if (room.gameState) {
-        room.gameState.geishaSet = snapshotGeishaSet;
-    }
-
-    return { room, errorMessage: null };
-};
-
 // WebSocket 連線入口（處理玩家進出與訊息）
 wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
     const origin = req.headers.origin;
@@ -3006,7 +2900,9 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
         if (!room) {
             const snapshot = await loadRoomSnapshot<RestorableRoomSnapshot>(roomId);
             if (snapshot) {
-                const restoreResult = restoreRoomFromSnapshot(snapshot);
+                const restoreResult = restoreRoomFromSnapshot(snapshot, {
+                    createRoom: (restoredRoomId) => new GameRoom(restoredRoomId)
+                });
                 room = restoreResult.room ?? undefined;
                 if (room) {
                     gameRooms.set(roomId, room);

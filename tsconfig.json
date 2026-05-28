@@ -16,6 +16,8 @@
   },
   "include": [
     "index.ts",
+    "http/**/*.ts",
+    "rooms/**/*.ts",
     "utils/**/*.ts"
   ],
   "exclude": [
