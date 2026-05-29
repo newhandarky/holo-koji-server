@@ -32,6 +32,7 @@ import {
     LEGACY_GEISHA_SET_ERROR_MESSAGE,
     PLAYER_ID_TAKEN_ERROR_MESSAGE
 } from '../rooms/roomErrors.js';
+import { normalizeNpcDifficulty } from '../npc/npcConfig.js';
 import { backendLogger } from '../utils/runtimeLogger.js';
 import type { WebSocketConnectionContext } from './connectionContext.js';
 
@@ -98,13 +99,6 @@ export interface MessageHandlerDependencies<TRoom extends WebSocketRoomLike> {
     loadRoomSnapshot: <TSnapshot = unknown>(roomId: string) => Promise<TSnapshot | null>;
     deleteRoomSnapshot: (roomId: string) => Promise<void>;
 }
-
-const normalizeNpcDifficulty = (difficulty: unknown): 'easy' | 'medium' | 'hard' | 'expert' | 'hell' => {
-    if (difficulty === 'easy' || difficulty === 'medium' || difficulty === 'hard' || difficulty === 'expert' || difficulty === 'hell') {
-        return difficulty;
-    }
-    return 'easy';
-};
 
 const isRecord = (value: unknown): value is JsonObject => (
     Boolean(value) && typeof value === 'object' && !Array.isArray(value)

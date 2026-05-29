@@ -17,6 +17,7 @@
   "include": [
     "index.ts",
     "http/**/*.ts",
+    "npc/**/*.ts",
     "rooms/**/*.ts",
     "ws/**/*.ts",
     "utils/**/*.ts"
