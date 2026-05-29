@@ -1,4 +1,4 @@
-// server/index.js - 添加隨機順序決定功能
+// server/index.ts - authoritative game server entrypoint
 import './utils/localEnv.js';
 import { randomBytes } from 'node:crypto';
 import { createServer } from 'http';
@@ -50,28 +50,24 @@ import {
 import { accountStore } from './utils/accountStore.js';
 import { resolveVerifiedLineAccountRequest } from './utils/lineIdentity.js';
 import { createHttpApp } from './http/app.js';
+import {
+    getNpcDifficultyLabel,
+    getNpcThinkingDelay,
+    normalizeNpcDifficulty,
+    type NpcDifficulty
+} from './npc/npcConfig.js';
+import {
+    applyCardsToSnapshot as applyCardsToNpcSnapshot,
+    buildGeishaCountSnapshot as buildNpcGeishaCountSnapshot,
+    evaluateSnapshot as evaluateNpcSnapshot,
+    getCardUtility as getNpcCardUtility,
+    type NpcSnapshot
+} from './npc/npcEvaluation.js';
 import { createRoomRegistry } from './rooms/roomRegistry.js';
 import { GEISHA_SET_CONFIG_ERROR_MESSAGE } from './rooms/roomErrors.js';
 import { type RestorableRoomLike } from './rooms/roomRestore.js';
 import { registerWebSocketHandlers } from './ws/messageRouter.js';
 
-// NPC 設定（難度與思考時間）
-const NPC_DIFFICULTY_LABEL = {
-    easy: 'しぐれうい',
-    medium: '大空スバル',
-    hard: '兎田ぺこら',
-    expert: '猫又おかゆ',
-    hell: 'ときのそら'
-};
-const NPC_THINKING_DELAY = {
-    easy: 1400,
-    medium: 1000,
-    hard: 700,
-    expert: 500,
-    hell: 350
-};
-
-type NpcDifficulty = keyof typeof NPC_DIFFICULTY_LABEL;
 type TimerHandle = ReturnType<typeof setTimeout>;
 
 type JsonObject = Record<string, unknown>;
@@ -141,8 +137,6 @@ type ServerAction = {
     payload?: GameActionPayload;
 };
 type CompetitionGroupIds = [string[], string[]] | string[][];
-type NpcSnapshotEntry = { npc: number; opp: number; charm: number };
-type NpcSnapshot = Map<number, NpcSnapshotEntry>;
 const toStringArray = (value: unknown): string[] => (
     Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string') : []
 );
@@ -152,13 +146,6 @@ const toCompetitionGroups = (value: unknown): string[][] => (
         ? value.map((group) => toStringArray(group)).filter((group) => group.length > 0)
         : []
 );
-
-const normalizeNpcDifficulty = (difficulty: unknown): NpcDifficulty => {
-    if (difficulty === 'easy' || difficulty === 'medium' || difficulty === 'hard' || difficulty === 'expert' || difficulty === 'hell') {
-        return difficulty;
-    }
-    return 'easy';
-};
 
 const createRoomSessionToken = (): string => randomBytes(24).toString('hex');
 
@@ -308,7 +295,7 @@ class GameRoom implements RestorableRoomLike {
         }
 
         const normalized = normalizeNpcDifficulty(difficulty);
-        const label = NPC_DIFFICULTY_LABEL[normalized] ?? NPC_DIFFICULTY_LABEL.easy;
+        const label = getNpcDifficultyLabel(normalized);
         const npcId = `${label}`;
         const npcSocket = createNpcSocket();
 
@@ -424,7 +411,7 @@ class GameRoom implements RestorableRoomLike {
         });
 
         if (this.npcId) {
-            const delay = NPC_THINKING_DELAY[this.npcDifficulty ?? 'easy'] ?? NPC_THINKING_DELAY.easy;
+            const delay = getNpcThinkingDelay(this.npcDifficulty);
             setTimeout(() => {
                 if (this.npcId) {
                     this.confirmReady(this.npcId);
@@ -950,7 +937,7 @@ class GameRoom implements RestorableRoomLike {
 
         // 若有 NPC，順序決定後自動確認
         if (this.npcId) {
-            const delay = NPC_THINKING_DELAY[this.npcDifficulty ?? 'easy'] ?? NPC_THINKING_DELAY.easy;
+            const delay = getNpcThinkingDelay(this.npcDifficulty);
             setTimeout(() => {
                 if (this.npcId) {
                     this.confirmOrder(this.npcId);
@@ -1225,7 +1212,7 @@ class GameRoom implements RestorableRoomLike {
             return;
         }
 
-        const delay = NPC_THINKING_DELAY[this.npcDifficulty ?? 'easy'] ?? NPC_THINKING_DELAY.easy;
+        const delay = getNpcThinkingDelay(this.npcDifficulty);
         if (this.npcActionTimer) {
             clearTimeout(this.npcActionTimer);
         }
@@ -1247,7 +1234,7 @@ class GameRoom implements RestorableRoomLike {
             return;
         }
 
-        const delay = NPC_THINKING_DELAY[this.npcDifficulty ?? 'easy'] ?? NPC_THINKING_DELAY.easy;
+        const delay = getNpcThinkingDelay(this.npcDifficulty);
         if (this.npcResponseTimer) {
             clearTimeout(this.npcResponseTimer);
         }
@@ -1265,80 +1252,23 @@ class GameRoom implements RestorableRoomLike {
 
     // 建立藝妓計數快照（用於 AI 評估）
     buildGeishaCountSnapshot(npcPlayer: GamePlayer, opponentPlayer: GamePlayer): NpcSnapshot {
-        const snapshot: NpcSnapshot = new Map();
         const geishas = this.gameState?.geishas ?? [];
-
-        geishas.forEach((geisha) => {
-            const npcCount = npcPlayer.playedCards.filter(card => card.geishaId === geisha.id).length;
-            const oppCount = opponentPlayer.playedCards.filter(card => card.geishaId === geisha.id).length;
-            snapshot.set(geisha.id, {
-                npc: npcCount,
-                opp: oppCount,
-                charm: geisha.charmPoints
-            });
-        });
-
-        return snapshot;
+        return buildNpcGeishaCountSnapshot(geishas, npcPlayer, opponentPlayer);
     }
 
     // 計算單張卡片對指定玩家的價值（考慮追趕與翻盤）
     getCardUtility(snapshot: NpcSnapshot, geishaId: number, isNpc: boolean): number {
-        const entry = snapshot.get(geishaId);
-        if (!entry) {
-            return 0;
-        }
-
-        const myCount = isNpc ? entry.npc : entry.opp;
-        const oppCount = isNpc ? entry.opp : entry.npc;
-        const charm = entry.charm;
-
-        if (myCount + 1 > oppCount && myCount <= oppCount) {
-            return charm * 4; // 翻盤或搶先的價值最高
-        }
-
-        if (myCount + 1 === oppCount) {
-            return charm * 2; // 追平有一定價值
-        }
-
-        return charm; // 其他情況以魅力值基礎評估
+        return getNpcCardUtility(snapshot, geishaId, isNpc);
     }
 
     // 計算當前分數差（AI 評估用）
     evaluateSnapshot(snapshot: NpcSnapshot): number {
-        let npcScore = 0;
-        let oppScore = 0;
-
-        snapshot.forEach((entry) => {
-            const base = entry.charm * 2;
-            const diff = entry.npc - entry.opp;
-
-            npcScore += base + diff * 3;
-            oppScore += base - diff * 3;
-        });
-
-        return npcScore - oppScore;
+        return evaluateNpcSnapshot(snapshot);
     }
 
     // 將卡片套用到快照（模擬結果）
     applyCardsToSnapshot(snapshot: NpcSnapshot, geishaIdList: number[], isNpc: boolean): NpcSnapshot {
-        const next: NpcSnapshot = new Map();
-        snapshot.forEach((value: NpcSnapshotEntry, key: number) => {
-            next.set(key, { ...value });
-        });
-
-        geishaIdList.forEach((geishaId) => {
-            const entry = next.get(geishaId);
-            if (!entry) {
-                return;
-            }
-            if (isNpc) {
-                entry.npc += 1;
-            } else {
-                entry.opp += 1;
-            }
-        });
-
-        return next;
+        return applyCardsToNpcSnapshot(snapshot, geishaIdList, isNpc);
     }
 
     // NPC 執行回合行動
