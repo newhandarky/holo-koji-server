@@ -1,5 +1,5 @@
 // src/models/GameManager.ts
-import { GameState, GameAction, Player } from "game-shared-types";
+import { GameState, GameAction, Player } from "@newhandarky/hanakoji-game-types";
 import { gameReducer, initialState } from '../reducers/gameReducer';
 import { createRandomizedGeishas } from '../utils/gameUtils';
 import { backendLogger } from '../utils/runtimeLogger.js';

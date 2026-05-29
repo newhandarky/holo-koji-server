@@ -1,6 +1,6 @@
 import type { IncomingMessage } from 'http';
 import { type RawData, type WebSocket, type WebSocketServer } from 'ws';
-import type { AccountSyncRequest, ClientToServerMessage } from 'game-shared-types';
+import type { AccountSyncRequest, ClientToServerMessage } from '@newhandarky/hanakoji-game-types';
 import type { AccountStore } from '../utils/accountStore.js';
 import {
     backendLogger,

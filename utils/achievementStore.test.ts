@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import type { AccountPersistenceStatus, AchievementId, AchievementStatusResult, AchievementSummaryItem } from 'game-shared-types';
+import type { AccountPersistenceStatus, AchievementId, AchievementStatusResult, AchievementSummaryItem } from '@newhandarky/hanakoji-game-types';
 import type { AchievementMatchCompletionRequest, AchievementStore } from './achievementStore.js';
 import {
     ACHIEVEMENT_CATALOG,

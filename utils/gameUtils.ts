@@ -11,7 +11,7 @@ import type {
     PendingInteraction,
     Player,
     RoomSetupMode
-} from 'game-shared-types';
+} from '@newhandarky/hanakoji-game-types';
 import { characterProfilesBySet } from './characterProfiles.js';
 
 const DEFAULT_WEB_APP_URL = 'https://newhandarky.github.io/holo-koji';

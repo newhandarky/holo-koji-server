@@ -7,7 +7,7 @@ import type {
     JoinRoomPayload,
     LineAccountProfile,
     RoomSetupMode
-} from 'game-shared-types';
+} from '@newhandarky/hanakoji-game-types';
 import {
     DEFAULT_ROOM_SETUP_MODE,
     createWaitingGameState,

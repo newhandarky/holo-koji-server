@@ -2,7 +2,7 @@ import type { WebSocket } from 'ws';
 import type {
     AccountSyncRequest,
     AchievementAcknowledgeRequest
-} from 'game-shared-types';
+} from '@newhandarky/hanakoji-game-types';
 import type { AccountStore } from '../utils/accountStore.js';
 import type { WebSocketConnectionContext } from './connectionContext.js';
 

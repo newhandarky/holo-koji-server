@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import type { AccountSyncResult, LineAccountProfile } from 'game-shared-types';
+import type { AccountSyncResult, LineAccountProfile } from '@newhandarky/hanakoji-game-types';
 import type { AchievementMatchCompletionRequest, AchievementMatchCompletionResult } from './achievementStore.js';
 import {
     buildPublicAccountProfile,

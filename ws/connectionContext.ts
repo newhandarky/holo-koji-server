@@ -1,4 +1,4 @@
-import type { LineAccountProfile } from 'game-shared-types';
+import type { LineAccountProfile } from '@newhandarky/hanakoji-game-types';
 
 export interface WebSocketConnectionContext {
     origin: string;
