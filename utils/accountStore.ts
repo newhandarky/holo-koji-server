@@ -6,7 +6,7 @@ import type {
     LineAccountProfile,
     MinimalAccountCounters,
     VerifiedLineIdentity
-} from 'game-shared-types';
+} from '@newhandarky/hanakoji-game-types';
 import { backendLogger } from './runtimeLogger.js';
 import {
     createAchievementStore,

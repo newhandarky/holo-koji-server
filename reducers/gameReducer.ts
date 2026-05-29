@@ -1,5 +1,5 @@
 // src/reducers/gameReducer.ts
-import { GameState, GameAction, Geisha } from "game-shared-types"
+import { GameState, GameAction, Geisha } from "@newhandarky/hanakoji-game-types"
 // TS 對 .js 的 re-export 沒有型別資訊，因此 IDE 會判定沒有 export
 import { createRandomizedGeishas } from '../utils/gameUtils';
 import { backendLogger } from '../utils/runtimeLogger.js';

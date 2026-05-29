@@ -7,7 +7,7 @@ import type {
     AchievementStatus,
     AchievementStatusResult,
     AchievementSummaryItem
-} from 'game-shared-types';
+} from '@newhandarky/hanakoji-game-types';
 import { backendLogger } from './runtimeLogger.js';
 
 const REDIS_URL = process.env.REDIS_URL;

@@ -1,4 +1,4 @@
-import { CharacterProfile, GeishaSet } from 'game-shared-types';
+import { CharacterProfile, GeishaSet } from '@newhandarky/hanakoji-game-types';
 
 export const characterProfilesBySet: Record<GeishaSet, CharacterProfile[]> = {
     default: [

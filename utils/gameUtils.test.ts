@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import type { CharacterProfile, GameState, Geisha, ItemCard, OpeningDealSummary } from 'game-shared-types';
+import type { CharacterProfile, GameState, Geisha, ItemCard, OpeningDealSummary } from '@newhandarky/hanakoji-game-types';
 import {
     buildDeckForGeishas,
     buildOpeningDealSummary,

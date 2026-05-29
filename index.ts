@@ -12,7 +12,7 @@ import type {
     ItemCard,
     LineAccountProfile,
     RoomSetupMode
-} from 'game-shared-types';
+} from '@newhandarky/hanakoji-game-types';
 import {
     DEFAULT_GEISHA_SET,
     DEFAULT_ROOM_SETUP_MODE,
