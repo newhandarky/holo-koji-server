@@ -57,12 +57,10 @@ import {
     type NpcDifficulty
 } from './npc/npcConfig.js';
 import {
-    applyCardsToSnapshot as applyCardsToNpcSnapshot,
-    buildGeishaCountSnapshot as buildNpcGeishaCountSnapshot,
-    evaluateSnapshot as evaluateNpcSnapshot,
-    getCardUtility as getNpcCardUtility,
-    type NpcSnapshot
-} from './npc/npcEvaluation.js';
+    buildNpcActionChoice,
+    pickNpcCompetitionGroupResponse,
+    pickNpcGiftCardResponse
+} from './npc/npcStrategy.js';
 import { createRoomRegistry } from './rooms/roomRegistry.js';
 import { GEISHA_SET_CONFIG_ERROR_MESSAGE } from './rooms/roomErrors.js';
 import { type RestorableRoomLike } from './rooms/roomRestore.js';
@@ -136,7 +134,6 @@ type ServerAction = {
     type: string;
     payload?: GameActionPayload;
 };
-type CompetitionGroupIds = [string[], string[]] | string[][];
 const toStringArray = (value: unknown): string[] => (
     Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string') : []
 );
@@ -1245,32 +1242,6 @@ class GameRoom implements RestorableRoomLike {
         }, delay);
     }
 
-    // 取得藝妓的魅力值
-    getGeishaCharmPoints(geishaId: number): number {
-        return this.gameState?.geishas?.find(geisha => geisha.id === geishaId)?.charmPoints ?? 0;
-    }
-
-    // 建立藝妓計數快照（用於 AI 評估）
-    buildGeishaCountSnapshot(npcPlayer: GamePlayer, opponentPlayer: GamePlayer): NpcSnapshot {
-        const geishas = this.gameState?.geishas ?? [];
-        return buildNpcGeishaCountSnapshot(geishas, npcPlayer, opponentPlayer);
-    }
-
-    // 計算單張卡片對指定玩家的價值（考慮追趕與翻盤）
-    getCardUtility(snapshot: NpcSnapshot, geishaId: number, isNpc: boolean): number {
-        return getNpcCardUtility(snapshot, geishaId, isNpc);
-    }
-
-    // 計算當前分數差（AI 評估用）
-    evaluateSnapshot(snapshot: NpcSnapshot): number {
-        return evaluateNpcSnapshot(snapshot);
-    }
-
-    // 將卡片套用到快照（模擬結果）
-    applyCardsToSnapshot(snapshot: NpcSnapshot, geishaIdList: number[], isNpc: boolean): NpcSnapshot {
-        return applyCardsToNpcSnapshot(snapshot, geishaIdList, isNpc);
-    }
-
     // NPC 執行回合行動
     performNpcAction(): void {
         if (!this.gameState || !this.npcId) {
@@ -1311,7 +1282,15 @@ class GameRoom implements RestorableRoomLike {
         }
 
         if (pending.type === 'GIFT_SELECTION') {
-            const card = this.pickNpcGiftCard(pending.offeredCards ?? []);
+            const npcPlayer = this.getPlayerState(this.npcId);
+            const opponent = this.getOpponentState(this.npcId);
+            const card = pickNpcGiftCardResponse(
+                pending.offeredCards ?? [],
+                this.npcDifficulty,
+                npcPlayer,
+                opponent,
+                this.gameState.geishas
+            );
             if (card) {
                 this.handleAction(this.npcId, { type: 'RESOLVE_GIFT', payload: { chosenCardId: card.id } });
             }
@@ -1319,7 +1298,15 @@ class GameRoom implements RestorableRoomLike {
         }
 
         if (pending.type === 'COMPETITION_SELECTION') {
-            const index = this.pickNpcCompetitionGroup(pending.groups ?? []);
+            const npcPlayer = this.getPlayerState(this.npcId);
+            const opponent = this.getOpponentState(this.npcId);
+            const index = pickNpcCompetitionGroupResponse(
+                pending.groups ?? [],
+                this.npcDifficulty,
+                npcPlayer,
+                opponent,
+                this.gameState.geishas
+            );
             if (index !== null) {
                 this.handleAction(this.npcId, { type: 'RESOLVE_COMPETITION', payload: { chosenGroupIndex: index } });
             }
@@ -1332,334 +1319,7 @@ class GameRoom implements RestorableRoomLike {
         if (!opponent) {
             return null;
         }
-
-        const available = player.actionTokens.filter(token => !token.used).map(token => token.type);
-        const hasCards = player.hand.length;
-
-        const candidates = available.filter((type) => {
-            if (type === 'secret') return hasCards >= 1;
-            if (type === 'trade-off') return hasCards >= 2;
-            if (type === 'gift') return hasCards >= 3;
-            if (type === 'competition') return hasCards >= 4;
-            return false;
-        });
-
-        if (candidates.length === 0) {
-            return null;
-        }
-
-        const pickRandom = <T>(list: T[]): T | undefined => list[Math.floor(Math.random() * list.length)];
-        const snapshot = this.buildGeishaCountSnapshot(player, opponent);
-        const sortedByNpcValue = [...player.hand]
-            .sort((a, b) => this.getCardUtility(snapshot, a.geishaId, true) - this.getCardUtility(snapshot, b.geishaId, true));
-
-        let actionType = pickRandom(candidates);
-
-        if (this.npcDifficulty === 'expert' || this.npcDifficulty === 'hell') {
-            actionType = this.pickBestNpcAction(player, opponent, candidates) ?? actionType;
-        } else if (this.npcDifficulty !== 'easy') {
-            if (candidates.includes('competition')) {
-                actionType = 'competition';
-            } else if (candidates.includes('gift')) {
-                actionType = 'gift';
-            } else if (candidates.includes('secret')) {
-                actionType = 'secret';
-            } else {
-                actionType = 'trade-off';
-            }
-        }
-
-        if (actionType === 'secret') {
-            const card = this.npcDifficulty === 'easy'
-                ? pickRandom(player.hand)
-                : sortedByNpcValue[sortedByNpcValue.length - 1];
-            if (!card) {
-                return null;
-            }
-            return { type: 'PLAY_SECRET', payload: { cardId: card.id } };
-        }
-
-        if (actionType === 'trade-off') {
-            const selected = this.npcDifficulty === 'easy'
-                ? this.pickRandomCards(player.hand, 2)
-                : this.pickTradeOffCards(player, opponent);
-            return { type: 'PLAY_TRADE_OFF', payload: { cardIds: selected.map(card => card.id) } };
-        }
-
-        if (actionType === 'gift') {
-            const selected = this.npcDifficulty === 'easy'
-                ? this.pickRandomCards(player.hand, 3)
-                : this.pickGiftCards(player, opponent);
-            return { type: 'INITIATE_GIFT', payload: { cardIds: selected.map(card => card.id) } };
-        }
-
-        if (actionType === 'competition') {
-            const picked = this.npcDifficulty === 'easy'
-                ? this.pickRandomCards(player.hand, 4)
-                : this.pickCompetitionCards(player, opponent);
-            const groups = this.npcDifficulty === 'easy'
-                ? this.buildNpcRandomGroups(picked)
-                : this.buildNpcCompetitionGroups(picked, player, opponent);
-            return { type: 'INITIATE_COMPETITION', payload: { groups } };
-        }
-
-        return null;
-    }
-
-    // 隨機挑選指定數量卡片
-    pickRandomCards(cards: ItemCard[], count: number): ItemCard[] {
-        const pool = [...cards];
-        const picked: ItemCard[] = [];
-        while (pool.length > 0 && picked.length < count) {
-            const index = Math.floor(Math.random() * pool.length);
-            const [card] = pool.splice(index, 1);
-            if (card) {
-                picked.push(card);
-            }
-        }
-        return picked;
-    }
-
-    // 競爭分組策略（盡量平衡）
-    buildNpcCompetitionGroups(cards: ItemCard[], npcPlayer: GamePlayer, opponent: GamePlayer): CompetitionGroupIds {
-        const snapshot = this.buildGeishaCountSnapshot(npcPlayer, opponent);
-        const sorted = [...cards].sort((a, b) => this.getCardValue(b) - this.getCardValue(a));
-        if (sorted.length < 4) {
-            return [
-                sorted.slice(0, 2).map(card => card.id),
-                sorted.slice(2, 4).map(card => card.id)
-            ].filter(group => group.length > 0);
-        }
-
-        const groupA = [sorted[0], sorted[3]].filter((card): card is ItemCard => Boolean(card));
-        const groupB = [sorted[1], sorted[2]].filter((card): card is ItemCard => Boolean(card));
-        const groupOptions = [
-            [groupA.map(card => card.id), groupB.map(card => card.id)],
-            [[sorted[0], sorted[2]].map(card => card.id), [sorted[1], sorted[3]].map(card => card.id)],
-            [[sorted[0], sorted[1]].map(card => card.id), [sorted[2], sorted[3]].map(card => card.id)]
-        ];
-
-        const idToGeisha = new Map(sorted.map(card => [card.id, card.geishaId]));
-
-        // 選擇讓對手最難下決定的一組（最大化最差結果）
-        let best = groupOptions[0];
-        let bestScore = -Infinity;
-
-        groupOptions.forEach((option) => {
-            const [g1, g2] = option;
-            const g1Geishas = g1.map(cardId => idToGeisha.get(cardId)).filter((geishaId): geishaId is number => typeof geishaId === 'number');
-            const g2Geishas = g2.map(cardId => idToGeisha.get(cardId)).filter((geishaId): geishaId is number => typeof geishaId === 'number');
-            const worst = Math.min(
-                this.evaluateSnapshot(this.applyCardsToSnapshot(snapshot, g1Geishas, false)),
-                this.evaluateSnapshot(this.applyCardsToSnapshot(snapshot, g2Geishas, false))
-            );
-            if (worst > bestScore) {
-                bestScore = worst;
-                best = option;
-            }
-        });
-
-        return best;
-    }
-
-    // 競爭分組（隨機）
-    buildNpcRandomGroups(cards: ItemCard[]): string[][] {
-        const pool = [...cards];
-        for (let i = pool.length - 1; i > 0; i -= 1) {
-            const j = Math.floor(Math.random() * (i + 1));
-            [pool[i], pool[j]] = [pool[j], pool[i]];
-        }
-        return [
-            pool.slice(0, 2).map(card => card.id),
-            pool.slice(2, 4).map(card => card.id)
-        ];
-    }
-
-    // NPC 回應贈予：挑選價值最高的卡片
-    pickNpcGiftCard(cards: ItemCard[] = []): ItemCard | null {
-        if (!cards || cards.length === 0) {
-            return null;
-        }
-
-        if (this.npcDifficulty === 'easy') {
-            return cards[Math.floor(Math.random() * cards.length)];
-        }
-
-        if (!this.npcId) {
-            return cards[0] ?? null;
-        }
-        const npcPlayer = this.getPlayerState(this.npcId);
-        const opponent = this.getOpponentState(this.npcId);
-        if (!npcPlayer || !opponent) {
-            return cards[0] ?? null;
-        }
-        const snapshot = this.buildGeishaCountSnapshot(npcPlayer, opponent);
-        return [...cards]
-            .sort((a, b) => this.getCardUtility(snapshot, b.geishaId, true) - this.getCardUtility(snapshot, a.geishaId, true))[0] ?? null;
-    }
-
-    // NPC 回應競爭：挑選總分較高的一組
-    pickNpcCompetitionGroup(groups: ItemCard[][] = []): number | null {
-        if (!groups || groups.length !== 2) {
-            return null;
-        }
-
-        if (this.npcDifficulty === 'easy') {
-            return Math.random() < 0.5 ? 0 : 1;
-        }
-
-        if (!this.npcId) {
-            return 0;
-        }
-        const npcPlayer = this.getPlayerState(this.npcId);
-        const opponent = this.getOpponentState(this.npcId);
-        if (!npcPlayer || !opponent) {
-            return 0;
-        }
-        const snapshot = this.buildGeishaCountSnapshot(npcPlayer, opponent);
-        const score = (group: ItemCard[]) => this.evaluateSnapshot(this.applyCardsToSnapshot(snapshot, group.map(card => card.geishaId), true));
-        return score(groups[0]) >= score(groups[1]) ? 0 : 1;
-    }
-
-    // 專家模式：在可用行動中挑選期望收益最高者
-    pickBestNpcAction(npcPlayer: GamePlayer, opponent: GamePlayer, candidates: ActionType[]): ActionType | null {
-        if (!candidates || candidates.length === 0) {
-            return null;
-        }
-
-        const snapshot = this.buildGeishaCountSnapshot(npcPlayer, opponent);
-        let bestAction: ActionType | null = null;
-        let bestScore = -Infinity;
-
-        candidates.forEach((actionType) => {
-            const score = this.evaluateNpcAction(npcPlayer, opponent, snapshot, actionType);
-            if (score > bestScore) {
-                bestScore = score;
-                bestAction = actionType;
-            }
-        });
-
-        return bestAction;
-    }
-
-    // 評估行動的期望收益（越高越好）
-    evaluateNpcAction(npcPlayer: GamePlayer, opponent: GamePlayer, snapshot: NpcSnapshot, actionType: ActionType): number {
-        if (actionType === 'secret') {
-            const bestCard = [...npcPlayer.hand]
-                .sort((a, b) => this.getCardUtility(snapshot, b.geishaId, true) - this.getCardUtility(snapshot, a.geishaId, true))[0];
-            if (!bestCard) {
-                return -Infinity;
-            }
-            const next = this.applyCardsToSnapshot(snapshot, [bestCard.geishaId], true);
-            return this.evaluateSnapshot(next);
-        }
-
-        if (actionType === 'trade-off') {
-            const discard = this.pickTradeOffCards(npcPlayer, opponent);
-            const loss = discard.reduce((sum, card) => sum + this.getCardUtility(snapshot, card.geishaId, true), 0);
-            return this.evaluateSnapshot(snapshot) - loss;
-        }
-
-        if (actionType === 'gift') {
-            const offered = this.pickGiftCards(npcPlayer, opponent);
-            if (offered.length < 3) {
-                return -Infinity;
-            }
-            const worst = Math.min(...offered.map((chosen) => {
-                const npcCards = offered.filter(card => card.id !== chosen.id);
-                const next = this.applyCardsToSnapshot(
-                    this.applyCardsToSnapshot(snapshot, [chosen.geishaId], false),
-                    npcCards.map(card => card.geishaId),
-                    true
-                );
-                return this.evaluateSnapshot(next);
-            }));
-            return worst;
-        }
-
-        if (actionType === 'competition') {
-            const picked = this.pickCompetitionCards(npcPlayer, opponent);
-            if (picked.length < 4) {
-                return -Infinity;
-            }
-            const [groupA, groupB] = this.buildNpcCompetitionGroups(picked, npcPlayer, opponent);
-            const idToGeisha = new Map(picked.map(card => [card.id, card.geishaId]));
-            const g1 = groupA.map(cardId => idToGeisha.get(cardId)).filter((geishaId): geishaId is number => typeof geishaId === 'number');
-            const g2 = groupB.map(cardId => idToGeisha.get(cardId)).filter((geishaId): geishaId is number => typeof geishaId === 'number');
-            const worst = Math.min(
-                this.evaluateSnapshot(this.applyCardsToSnapshot(snapshot, g1, false)),
-                this.evaluateSnapshot(this.applyCardsToSnapshot(snapshot, g2, false))
-            );
-            return worst;
-        }
-
-        return -Infinity;
-    }
-
-    // 競爭挑選卡片（偏強：用評分選出最有利的 4 張）
-    pickCompetitionCards(npcPlayer: GamePlayer, opponent: GamePlayer): ItemCard[] {
-        const snapshot = this.buildGeishaCountSnapshot(npcPlayer, opponent);
-        const scored = [...npcPlayer.hand].sort((a, b) => {
-            const diff = this.getCardUtility(snapshot, b.geishaId, true) - this.getCardUtility(snapshot, a.geishaId, true);
-            return diff;
-        });
-        return scored.slice(0, 4);
-    }
-
-    // 贈予挑選卡片（偏強：最大化最差結果）
-    pickGiftCards(npcPlayer: GamePlayer, opponent: GamePlayer): ItemCard[] {
-        const snapshot = this.buildGeishaCountSnapshot(npcPlayer, opponent);
-        const cards = npcPlayer.hand;
-        let bestCombo = cards.slice(0, 3);
-        let bestScore = -Infinity;
-
-        for (let i = 0; i < cards.length; i += 1) {
-            for (let j = i + 1; j < cards.length; j += 1) {
-                for (let k = j + 1; k < cards.length; k += 1) {
-                    const combo = [cards[i], cards[j], cards[k]].filter((card): card is ItemCard => Boolean(card));
-                    const opponentChoices = combo.map(card => card);
-
-                    const worst = Math.min(...opponentChoices.map((chosen) => {
-                        const npcCards = combo.filter(card => card.id !== chosen.id);
-                        const next = this.applyCardsToSnapshot(
-                            this.applyCardsToSnapshot(snapshot, [chosen.geishaId], false),
-                            npcCards.map(card => card.geishaId),
-                            true
-                        );
-                        return this.evaluateSnapshot(next);
-                    }));
-
-                    if (worst > bestScore) {
-                        bestScore = worst;
-                        bestCombo = combo;
-                    }
-                }
-            }
-        }
-
-        return bestCombo;
-    }
-
-    // 取捨挑選卡片（偏強：犧牲價值最低且可能阻止對手的牌）
-    pickTradeOffCards(npcPlayer: GamePlayer, opponent: GamePlayer): ItemCard[] {
-        const snapshot = this.buildGeishaCountSnapshot(npcPlayer, opponent);
-        const sorted = [...npcPlayer.hand].sort((a, b) => {
-            const npcValueA = this.getCardUtility(snapshot, a.geishaId, true);
-            const npcValueB = this.getCardUtility(snapshot, b.geishaId, true);
-            const oppValueA = this.getCardUtility(snapshot, a.geishaId, false);
-            const oppValueB = this.getCardUtility(snapshot, b.geishaId, false);
-
-            const scoreA = npcValueA - oppValueA * 0.6;
-            const scoreB = npcValueB - oppValueB * 0.6;
-            return scoreA - scoreB;
-        });
-
-        return sorted.slice(0, 2);
-    }
-
-    // 計算卡片價值（以魅力值為基準）
-    getCardValue(card: ItemCard): number {
-        return this.getGeishaCharmPoints(card.geishaId);
+        return buildNpcActionChoice(player, opponent, this.gameState?.geishas ?? [], this.npcDifficulty);
     }
 
     // 結束回合並切換到下一位可行動玩家
