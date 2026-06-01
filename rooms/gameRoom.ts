@@ -83,6 +83,11 @@ import {
     resolveCompetitionAction,
     resolveGiftAction
 } from '../game/actionTransitions.js';
+import {
+    advanceToNextTurn,
+    prepareCurrentTurn,
+    revealSecretCards
+} from '../game/turnLifecycle.js';
 import { GEISHA_SET_CONFIG_ERROR_MESSAGE } from './roomErrors.js';
 import { type RestorableRoomLike } from './roomRestore.js';
 
@@ -1006,69 +1011,55 @@ export class GameRoom implements RestorableRoomLike {
         return this.getPlayerState(opponentId);
     }
 
-    // 抽牌給指定玩家（從牌堆頂端）
-    drawCardForPlayer(player: GamePlayer): ItemCard | null {
-        if (!this.gameState || this.gameState.drawPile.length === 0) {
-            return null;
-        }
-
-        const card = this.gameState.drawPile.shift();
-        if (card) {
-            player.hand.push(card);
-        }
-        return card ?? null;
-    }
-
     // 開始當前玩家回合（抽牌、重置互動狀態）
     beginTurnForCurrentPlayer(): void {
         if (!this.gameState) {
             return;
         }
 
-        const currentPlayer = this.gameState.players[this.gameState.currentPlayer];
+        const result = prepareCurrentTurn(this.gameState);
+        this.gameState = result.gameState;
 
-        if (!currentPlayer) {
+        if (result.outcome.type === 'missing-player') {
             backendLogger.warn(`⚠️ 房間 ${this.roomId} 找不到當前玩家資料`, {
                 roomId: this.roomId
             });
             return;
         }
 
-        if (currentPlayer.actionTokens.every(token => token.used)) {
-            backendLogger.info(`🔄 玩家 ${currentPlayer.id} 已無可用行動，跳到下一位`, {
+        if (result.outcome.type === 'skip-player') {
+            backendLogger.info(`🔄 玩家 ${result.outcome.playerId} 已無可用行動，跳到下一位`, {
                 roomId: this.roomId,
-                playerId: currentPlayer.id
+                playerId: result.outcome.playerId
             });
             this.endTurn();
             return;
         }
 
+        const currentPlayerId = result.outcome.playerId;
+
         // 抽牌並依玩家視角廣播
-        const drawnCard = this.drawCardForPlayer(currentPlayer);
-        if (drawnCard) {
+        if (result.outcome.type === 'drawn-card') {
+            const drawnCard = result.outcome.card;
             this.players.forEach((player) => {
-                const visibleCard = player.playerId === currentPlayer.id
+                const visibleCard = player.playerId === currentPlayerId
                     ? drawnCard
-                    : createMaskedCard(`draw-${currentPlayer.id}`, 0);
+                    : createMaskedCard(`draw-${currentPlayerId}`, 0);
 
                 this.sendToPlayer(player.playerId, {
                     type: 'CARD_DRAWN',
                     payload: {
-                        playerId: currentPlayer.id,
+                        playerId: currentPlayerId,
                         card: visibleCard
                     }
                 });
             });
         }
 
-        this.gameState.phase = 'playing';
-        this.gameState.pendingInteraction = null;
-        this.gameState.lastAction = undefined;
-
         this.broadcastGameState();
 
         // 若輪到 NPC，安排自動行動
-        if (this.isNpcPlayerId(currentPlayer.id)) {
+        if (this.isNpcPlayerId(currentPlayerId)) {
             this.scheduleNpcTurn();
         }
     }
@@ -1207,8 +1198,10 @@ export class GameRoom implements RestorableRoomLike {
             return;
         }
 
-        const availablePlayerIndex = this.gameState.players.findIndex(player => player.actionTokens.some(token => !token.used));
-        if (availablePlayerIndex === -1) {
+        const result = advanceToNextTurn(this.gameState);
+        this.gameState = result.gameState;
+
+        if (result.outcome.type === 'resolve-round') {
             backendLogger.info(`🧮 房間 ${this.roomId} 所有玩家行動結束，進入結算階段`, {
                 roomId: this.roomId
             });
@@ -1216,26 +1209,7 @@ export class GameRoom implements RestorableRoomLike {
             return;
         }
 
-        let nextIndex = (this.gameState.currentPlayer + 1) % this.gameState.players.length;
-        let attempts = 0;
-
-        while (attempts < this.gameState.players.length) {
-            const candidate = this.gameState.players[nextIndex];
-            if (candidate && candidate.actionTokens.some(token => !token.used)) {
-                this.gameState.currentPlayer = nextIndex;
-                this.beginTurnForCurrentPlayer();
-                return;
-            }
-
-            nextIndex = (nextIndex + 1) % this.gameState.players.length;
-            attempts += 1;
-        }
-
-        backendLogger.info(`🧮 房間 ${this.roomId} 行動結束（未找到下一位玩家），進入結算`, {
-            roomId: this.roomId
-        });
-        this.gameState.phase = 'resolution';
-        this.broadcastGameState();
+        this.beginTurnForCurrentPlayer();
     }
 
     // 結算回合（翻開密約、計算好感、檢查勝利）
@@ -1252,12 +1226,7 @@ export class GameRoom implements RestorableRoomLike {
         });
 
         // 翻開密約卡並加入計分區
-        this.gameState.players.forEach((player) => {
-            if (player.secretCards.length > 0) {
-                player.playedCards.push(...player.secretCards);
-                player.secretCards = [];
-            }
-        });
+        this.gameState.players = revealSecretCards(this.gameState.players);
 
         // 比較每位藝妓的卡牌數量，更新好感指示物
         const gameState = this.gameState;
