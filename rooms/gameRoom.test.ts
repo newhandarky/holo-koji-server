@@ -122,4 +122,18 @@ test('GameRoom starts game before sending masked deal animation cards', () => {
         step.card?.type === 'hidden'
         && step.card.id?.startsWith('hidden-host-deal-')
     )), true);
+
+    const hostDraw = host.messages.find(message => message.type === 'CARD_DRAWN')?.payload as {
+        playerId?: string;
+        card?: { id?: string; type?: string };
+    };
+    const guestDraw = guest.messages.find(message => message.type === 'CARD_DRAWN')?.payload as {
+        playerId?: string;
+        card?: { id?: string; type?: string };
+    };
+    assert.equal(hostDraw.playerId, 'host');
+    assert.notEqual(hostDraw.card?.type, 'hidden');
+    assert.equal(guestDraw.playerId, 'host');
+    assert.equal(guestDraw.card?.type, 'hidden');
+    assert.equal(guestDraw.card?.id, 'hidden-draw-host-0');
 });
