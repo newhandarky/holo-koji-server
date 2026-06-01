@@ -16,8 +16,6 @@ import {
     createRandomizedGeishas,
     createCustomSelectedGeishas,
     cloneGeishasForNextRound,
-    cloneGeishas,
-    createWaitingGameState,
     buildPlayerVisibleGameState,
     sanitizePendingInteractionForViewer,
     type ServerGameState
@@ -61,6 +59,16 @@ import {
     type DealSequenceStep
 } from '../game/roundPreparation.js';
 import {
+    applyOrderConfirmation,
+    applyOrderDecisionResult,
+    buildConfirmationUpdate,
+    buildOrderDecisionGameState,
+    canStartGameWithOrder,
+    choosePlayerOrder,
+    createOrderDecisionState,
+    type OrderDecisionState
+} from '../game/openingFlow.js';
+import {
     getActionAvailabilityError,
     getPendingInteractionError,
     toCompetitionGroups,
@@ -99,18 +107,6 @@ type NormalizedPlayerMeta = {
     lineUserId?: string;
     avatarUrl?: string;
     accountProfile?: LineAccountProfile;
-};
-
-type OrderDecisionResult = {
-    firstPlayer: string;
-    secondPlayer: string;
-    order: string[];
-};
-
-type OrderDecisionState = {
-    isDeciding: boolean;
-    result: OrderDecisionResult | null;
-    confirmations: Set<string>;
 };
 
 type RoundPreparationOptions = {
@@ -199,11 +195,7 @@ export class GameRoom implements RestorableRoomLike {
         // 建房角色設定模式
         this.setupMode = DEFAULT_ROOM_SETUP_MODE;
         this.customSelection = null;
-        this.orderDecisionState = {
-            isDeciding: false,
-            result: null,
-            confirmations: new Set()
-        };
+        this.orderDecisionState = createOrderDecisionState();
         // 藝妓卡的基底資料（跨回合保留好感）
         this.baseGeishas = null;
         // 發牌動畫序列
@@ -404,7 +396,12 @@ export class GameRoom implements RestorableRoomLike {
             return;
         }
 
-        if (this.readyConfirmations.has(playerId)) {
+        const update = buildConfirmationUpdate(
+            this.players.map(player => player.playerId),
+            this.readyConfirmations,
+            playerId
+        );
+        if (!update.added) {
             backendLogger.info(`ℹ️ 玩家 ${playerId} 重複準備確認，忽略重送`, {
                 roomId: this.roomId,
                 playerId
@@ -412,20 +409,17 @@ export class GameRoom implements RestorableRoomLike {
             return;
         }
 
-        this.readyConfirmations.add(playerId);
-        const waitingFor = this.players
-            .map(player => player.playerId)
-            .filter(id => !this.readyConfirmations.has(id));
+        this.readyConfirmations = new Set(update.confirmations);
 
         this.broadcast({
             type: 'READY_STATUS',
             payload: {
-                confirmations: Array.from(this.readyConfirmations),
-                waitingFor
+                confirmations: update.confirmations,
+                waitingFor: update.waitingFor
             }
         });
 
-        if (waitingFor.length === 0) {
+        if (update.waitingFor.length === 0) {
             this.startGameWithOrder();
         }
     }
@@ -445,11 +439,7 @@ export class GameRoom implements RestorableRoomLike {
         if (!this.regenerateBaseGeishas()) {
             return;
         }
-        this.orderDecisionState = {
-            isDeciding: false,
-            result: null,
-            confirmations: new Set()
-        };
+        this.orderDecisionState = createOrderDecisionState();
 
         this.startOrderDecision();
     }
@@ -749,26 +739,23 @@ export class GameRoom implements RestorableRoomLike {
             return false;
         }
 
-        const nextState = createWaitingGameState(
-            this.roomId,
+        const preparation = buildOrderDecisionGameState({
+            roomId: this.roomId,
+            hostId: this.hostId,
             playerIds,
-            cloneGeishas(baseGeishas),
-            this.geishaSet,
-            this.getPlayerMetaMap()
-        );
-        nextState.hostId = this.hostId;
-        nextState.phase = 'deciding_order';
-        nextState.orderDecision = {
-            isOpen: true,
-            phase: 'deciding',
-            players: playerIds,
-            result: undefined,
-            confirmations: [],
-            waitingFor: playerIds,
-            currentPlayer: playerIds[0] ?? ''
-        };
+            baseGeishas,
+            geishaSet: this.geishaSet,
+            playerMetaMap: this.getPlayerMetaMap()
+        });
+        if (!preparation.ok) {
+            backendLogger.warn(`⚠️ 房間 ${this.roomId} 無法準備順序決定`, {
+                roomId: this.roomId,
+                error: preparation.errorMessage
+            });
+            return false;
+        }
 
-        this.gameState = nextState;
+        this.gameState = preparation.value;
         this.dealSequence = [];
         return true;
     }
@@ -807,16 +794,16 @@ export class GameRoom implements RestorableRoomLike {
     decideOrder(): void {
         const playerIds = this.players.map(p => p.playerId);
 
-        // 隨機決定誰先手
-        const firstPlayerIndex = Math.random() < 0.5 ? 0 : 1;
-        const firstPlayer = playerIds[firstPlayerIndex] ?? '';
-        const secondPlayer = playerIds[1 - firstPlayerIndex] ?? '';
-
-        this.orderDecisionState.result = {
-            firstPlayer,
-            secondPlayer,
-            order: [firstPlayer, secondPlayer]
-        };
+        const result = choosePlayerOrder(playerIds);
+        if (!result) {
+            backendLogger.warn(`⚠️ 房間 ${this.roomId} 無法決定順序`, {
+                roomId: this.roomId,
+                playerCount: playerIds.length
+            });
+            return;
+        }
+        const { firstPlayer, secondPlayer } = result;
+        this.orderDecisionState.result = result;
 
         backendLogger.info(`🎲 房間 ${this.roomId} 順序決定完成`, {
             roomId: this.roomId,
@@ -826,19 +813,7 @@ export class GameRoom implements RestorableRoomLike {
 
         const gameState = this.gameState;
         if (gameState) {
-            const order = this.orderDecisionState.result.order;
-            gameState.players = order
-                .map(playerId => gameState.players.find(player => player.id === playerId))
-                .filter((player): player is GamePlayer => Boolean(player));
-
-            gameState.currentPlayer = 0;
-            gameState.orderDecision = {
-                ...gameState.orderDecision,
-                phase: 'result',
-                result: this.orderDecisionState.result,
-                confirmations: [],
-                waitingFor: [...order]
-            };
+            this.gameState = applyOrderDecisionResult(gameState, result);
         }
 
         // 廣播結果
@@ -878,7 +853,12 @@ export class GameRoom implements RestorableRoomLike {
             return;
         }
 
-        if (this.orderDecisionState.confirmations.has(playerId)) {
+        const update = buildConfirmationUpdate(
+            this.players.map(player => player.playerId),
+            this.orderDecisionState.confirmations,
+            playerId
+        );
+        if (!update.added) {
             backendLogger.info(`ℹ️ 玩家 ${playerId} 重複確認順序，忽略重送`, {
                 roomId: this.roomId,
                 playerId
@@ -886,7 +866,7 @@ export class GameRoom implements RestorableRoomLike {
             return;
         }
 
-        this.orderDecisionState.confirmations.add(playerId);
+        this.orderDecisionState.confirmations = new Set(update.confirmations);
         backendLogger.info(`✅ 玩家 ${playerId} 已確認順序`, {
             roomId: this.roomId,
             playerId,
@@ -894,23 +874,15 @@ export class GameRoom implements RestorableRoomLike {
         });
 
         if (this.gameState) {
-            this.gameState.orderDecision = {
-                ...this.gameState.orderDecision,
-                confirmations: Array.from(this.orderDecisionState.confirmations),
-                waitingFor: this.players
-                    .map(p => p.playerId)
-                    .filter(id => !this.orderDecisionState.confirmations.has(id))
-            };
+            this.gameState = applyOrderConfirmation(this.gameState, update);
         }
 
         // 廣播確認狀態
         this.broadcast({
             type: 'ORDER_CONFIRMATION_UPDATE',
             payload: {
-                confirmations: Array.from(this.orderDecisionState.confirmations),
-                waitingFor: this.players
-                    .map(p => p.playerId)
-                    .filter(id => !this.orderDecisionState.confirmations.has(id))
+                confirmations: update.confirmations,
+                waitingFor: update.waitingFor
             }
         });
 
@@ -919,7 +891,7 @@ export class GameRoom implements RestorableRoomLike {
         }
 
         // 如果所有玩家都確認了，開始遊戲
-        if (this.orderDecisionState.confirmations.size === 2) {
+        if (update.confirmations.length === 2) {
             setTimeout(() => {
                 this.startReadyCheck();
             }, 800);
@@ -929,10 +901,13 @@ export class GameRoom implements RestorableRoomLike {
     // 根據決定的順序開始遊戲
     startGameWithOrder(): void {
         const playerIds = this.players.map(player => player.playerId);
-        const hasConfirmedOrder = playerIds.every(playerId => this.orderDecisionState.confirmations.has(playerId));
-        const hasConfirmedReady = playerIds.every(playerId => this.readyConfirmations.has(playerId));
-
-        if (!this.orderDecisionState.result || !hasConfirmedOrder || !hasConfirmedReady) {
+        const orderDecisionResult = this.orderDecisionState.result;
+        if (!orderDecisionResult || !canStartGameWithOrder(
+            playerIds,
+            orderDecisionResult,
+            this.orderDecisionState.confirmations,
+            this.readyConfirmations
+        )) {
             backendLogger.warn(`⚠️ 房間 ${this.roomId} 開局條件尚未完成，拒絕提前發牌`, {
                 roomId: this.roomId,
                 hasOrderResult: Boolean(this.orderDecisionState.result),
@@ -942,7 +917,7 @@ export class GameRoom implements RestorableRoomLike {
             return;
         }
 
-        const { order } = this.orderDecisionState.result;
+        const { order } = orderDecisionResult;
         if (!this.ensureBaseGeishas()) {
             return;
         }
@@ -978,11 +953,7 @@ export class GameRoom implements RestorableRoomLike {
         this.beginTurnForCurrentPlayer();
 
         // 重置順序決定狀態
-        this.orderDecisionState = {
-            isDeciding: false,
-            result: null,
-            confirmations: new Set()
-        };
+        this.orderDecisionState = createOrderDecisionState();
         this.readyConfirmations.clear();
     }
 
