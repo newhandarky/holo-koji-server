@@ -66,6 +66,14 @@ import {
     getNextRoundOrder,
     resolveRoundBoard
 } from './game/roundResolution.js';
+import {
+    getActionAvailabilityError,
+    getCardOwnershipError,
+    getPendingInteractionError,
+    toCompetitionGroups,
+    toStringArray,
+    type ServerAction
+} from './game/actionValidation.js';
 import { createRoomRegistry } from './rooms/roomRegistry.js';
 import { GEISHA_SET_CONFIG_ERROR_MESSAGE } from './rooms/roomErrors.js';
 import { type RestorableRoomLike } from './rooms/roomRestore.js';
@@ -124,30 +132,6 @@ type GameRoomPlayer = RoomSeat & {
 };
 
 type GamePlayer = ServerGameState['players'][number];
-type GameActionPayload = {
-    type?: unknown;
-    actionType?: unknown;
-    action?: unknown;
-    cards?: unknown;
-    cardIds?: unknown;
-    cardId?: unknown;
-    chosenCardId?: unknown;
-    chosenGroupIndex?: unknown;
-    groups?: unknown;
-};
-type ServerAction = {
-    type: string;
-    payload?: GameActionPayload;
-};
-const toStringArray = (value: unknown): string[] => (
-    Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string') : []
-);
-
-const toCompetitionGroups = (value: unknown): string[][] => (
-    Array.isArray(value)
-        ? value.map((group) => toStringArray(group)).filter((group) => group.length > 0)
-        : []
-);
 
 const createRoomSessionToken = (): string => randomBytes(24).toString('hex');
 
@@ -1582,9 +1566,9 @@ class GameRoom implements RestorableRoomLike {
 
     // 驗證玩家行動指示物是否可用
     validateActionAvailable(player: GamePlayer, actionType: ActionType): boolean {
-        const token = player.actionTokens.find(item => item.type === actionType);
-        if (!token || token.used) {
-            this.sendError(player.id, '該行動已使用或不存在');
+        const errorMessage = getActionAvailabilityError(player, actionType);
+        if (errorMessage) {
+            this.sendError(player.id, errorMessage);
             return false;
         }
         return true;
@@ -1592,17 +1576,9 @@ class GameRoom implements RestorableRoomLike {
 
     // 驗證卡片是否屬於玩家
     validateCardOwnership(player: GamePlayer, cardIds: string[]): boolean {
-        const uniqueIds = new Set(cardIds);
-        if (uniqueIds.size !== cardIds.length) {
-            this.sendError(player.id, '卡片選擇重複');
-            return false;
-        }
-
-        const handIds = new Set(player.hand.map(card => card.id));
-        const allOwned = cardIds.every(cardId => handIds.has(cardId));
-
-        if (!allOwned) {
-            this.sendError(player.id, '選擇的卡片不在你的手牌中');
+        const errorMessage = getCardOwnershipError(player, cardIds);
+        if (errorMessage) {
+            this.sendError(player.id, errorMessage);
             return false;
         }
 
@@ -1611,16 +1587,9 @@ class GameRoom implements RestorableRoomLike {
 
     // 驗證互動狀態（避免同時進行多個互動）
     validatePendingInteraction(actionType: string, playerId: string): boolean {
-        const pending = this.gameState?.pendingInteraction;
-        const isResolveAction = actionType.startsWith('RESOLVE_');
-
-        if (pending && !isResolveAction) {
-            this.sendError(playerId, '目前正在等待對手回應');
-            return false;
-        }
-
-        if (!pending && isResolveAction) {
-            this.sendError(playerId, '目前沒有等待處理的互動');
+        const errorMessage = getPendingInteractionError(this.gameState?.pendingInteraction, actionType);
+        if (errorMessage) {
+            this.sendError(playerId, errorMessage);
             return false;
         }
 
