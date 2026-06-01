@@ -17,21 +17,14 @@ import {
     type RoomSeat
 } from '../utils/roomSession.js';
 import { LEGACY_ROOM_SNAPSHOT_ERROR_MESSAGE } from './roomErrors.js';
+import type {
+    RestorableRoomSnapshot,
+    SnapshotNpcDifficulty
+} from './roomSnapshot.js';
 
 type JsonObject = Record<string, unknown>;
 
-export type RestorableNpcDifficulty = 'easy' | 'medium' | 'hard' | 'expert' | 'hell';
-
-export type RestorableRoomSnapshot = Parameters<typeof resolveRestorableBoardForSet>[0] & {
-    roomId?: string;
-    hostId?: string | null;
-    npcId?: string | null;
-    npcDifficulty?: RestorableNpcDifficulty | null;
-    createdAt?: number;
-    matchCompletionCounter?: unknown;
-    currentCompletionId?: unknown;
-    gameState?: Partial<ServerGameState>;
-};
+export type { RestorableRoomSnapshot } from './roomSnapshot.js';
 
 export interface RestorableRoomLike {
     hostId: string | null;
@@ -39,7 +32,7 @@ export interface RestorableRoomLike {
     setupMode: RoomSetupMode;
     customSelection: CustomCharacterSelection | null;
     npcId: string | null;
-    npcDifficulty: RestorableNpcDifficulty | null;
+    npcDifficulty: SnapshotNpcDifficulty | null;
     createdAt: number;
     matchCompletionCounter: number;
     currentCompletionId: string | null;
@@ -78,8 +71,14 @@ export const restoreRoomFromSnapshot = <TRoom extends RestorableRoomLike>(
     let snapshotGeishaSet: GeishaSet = DEFAULT_GEISHA_SET;
     let resolvedBoard: Geisha[] | null = null;
     try {
-        snapshotGeishaSet = resolveRestorableGeishaSet(snapshot) as GeishaSet;
-        resolvedBoard = resolveRestorableBoardForSet(snapshot, snapshotGeishaSet);
+        const boardSnapshot = {
+            ...snapshot,
+            customSelection: snapshot.customSelection ?? undefined,
+            baseGeishas: snapshot.baseGeishas ? [...snapshot.baseGeishas] : undefined,
+            gameState: snapshot.gameState ?? undefined
+        };
+        snapshotGeishaSet = resolveRestorableGeishaSet(boardSnapshot) as GeishaSet;
+        resolvedBoard = resolveRestorableBoardForSet(boardSnapshot, snapshotGeishaSet);
     } catch (_error) {
         return { room: null, errorMessage: LEGACY_ROOM_SNAPSHOT_ERROR_MESSAGE };
     }

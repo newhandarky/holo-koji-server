@@ -21,10 +21,6 @@ import {
     type ServerGameState
 } from '../utils/gameUtils.js';
 import {
-    isRedisEnabled,
-    saveRoomSnapshot
-} from '../utils/roomStore.js';
-import {
     backendLogger,
     summarizeGameState,
     summarizeWebSocketMessage
@@ -32,7 +28,6 @@ import {
 import {
     createDisconnectedSocket,
     createNpcSocket,
-    serializeRoomSeat,
     type RoomSeat,
     type RoomSocketLike
 } from '../utils/roomSession.js';
@@ -90,10 +85,14 @@ import {
 } from '../game/turnLifecycle.js';
 import { GEISHA_SET_CONFIG_ERROR_MESSAGE } from './roomErrors.js';
 import { type RestorableRoomLike } from './roomRestore.js';
+import {
+    buildRoomSnapshot,
+    persistRoomSnapshot,
+    type RoomSnapshot
+} from './roomSnapshot.js';
 
 type TimerHandle = ReturnType<typeof setTimeout>;
 
-type JsonObject = Record<string, unknown>;
 type WireMessage = {
     type: string;
     payload?: unknown;
@@ -223,30 +222,13 @@ export class GameRoom implements RestorableRoomLike {
     }
 
     // 產出可儲存的房間快照（不含連線物件）
-    buildRoomSnapshot(): JsonObject {
-        return {
-            roomId: this.roomId,
-            hostId: this.hostId,
-            geishaSet: this.geishaSet,
-            setupMode: this.setupMode,
-            customSelection: this.customSelection,
-            npcId: this.npcId,
-            npcDifficulty: this.npcDifficulty,
-            createdAt: this.createdAt,
-            matchCompletionCounter: this.matchCompletionCounter,
-            currentCompletionId: this.currentCompletionId,
-            players: this.players.map(serializeRoomSeat),
-            baseGeishas: this.baseGeishas,
-            gameState: this.gameState
-        };
+    buildRoomSnapshot(): RoomSnapshot {
+        return buildRoomSnapshot(this);
     }
 
     // 儲存房間快照（Redis 可用時）
     persistRoomSnapshot(): void {
-        if (!isRedisEnabled()) {
-            return;
-        }
-        void saveRoomSnapshot(this.roomId, this.buildRoomSnapshot());
+        persistRoomSnapshot(this);
     }
 
     // 判斷是否為 NPC 玩家
