@@ -5,7 +5,6 @@ import type {
     GameState,
     Geisha,
     GeishaSet,
-    ItemCard,
     RoomSetupMode
 } from '@newhandarky/hanakoji-game-types';
 import {
@@ -14,15 +13,12 @@ import {
     createRandomizedGeishas,
     createCustomSelectedGeishas,
     cloneGeishasForNextRound,
-    buildPlayerVisibleGameState,
-    sanitizePendingInteractionForViewer,
     type PlayerMetaMap,
     type ServerGameState
 } from '../utils/gameUtils.js';
 import {
     backendLogger,
-    summarizeGameState,
-    summarizeWebSocketMessage
+    summarizeGameState
 } from '../utils/runtimeLogger.js';
 import {
     createNpcSocket,
@@ -95,13 +91,17 @@ import {
     removeRoomPlayer,
     type PlayerMetaPayload
 } from './roomMembership.js';
+import {
+    broadcastRoomMessage,
+    buildMaskedDealSequence,
+    buildPendingInteractionMessages,
+    buildViewerGameState,
+    createMaskedCard,
+    sendRoomMessage,
+    type WireMessage
+} from './roomMessaging.js';
 
 type TimerHandle = ReturnType<typeof setTimeout>;
-
-type WireMessage = {
-    type: string;
-    payload?: unknown;
-};
 
 type RoundPreparationOptions = {
     orderedPlayerIds?: string[] | null;
@@ -384,39 +384,7 @@ export class GameRoom implements RestorableRoomLike {
 
     // 將訊息傳送給指定玩家（避免廣播時洩漏資訊）
     sendToPlayer(playerId: string, message: WireMessage): void {
-        const target = this.players.find(player => player.playerId === playerId);
-        if (!target) {
-            backendLogger.warn(`⚠️ 找不到玩家 ${playerId}，無法傳送訊息`, {
-                roomId: this.roomId,
-                playerId
-            });
-            return;
-        }
-
-        if (target.ws.readyState !== 1) {
-            backendLogger.warn(`⚠️ 玩家 ${playerId} 連線狀態異常`, {
-                roomId: this.roomId,
-                playerId,
-                readyState: target.ws.readyState
-            });
-            return;
-        }
-
-        try {
-            target.ws.send(JSON.stringify(message));
-            backendLogger.diagnostic('🐞 [Server] 傳送訊息摘要', {
-                roomId: this.roomId,
-                targetPlayerId: playerId,
-                ...summarizeWebSocketMessage(message)
-            });
-        } catch (error) {
-            backendLogger.error(`❌ 傳送訊息給玩家 ${playerId} 失敗`, {
-                roomId: this.roomId,
-                playerId,
-                type: typeof message?.type === 'string' ? message.type : 'unknown',
-                error: error instanceof Error ? error.message : 'unknown'
-            });
-        }
+        sendRoomMessage(this.roomId, this.players, playerId, message);
     }
 
     // 傳送錯誤訊息給指定玩家（統一錯誤回傳格式）
@@ -436,11 +404,8 @@ export class GameRoom implements RestorableRoomLike {
             return;
         }
 
-        this.players.forEach((player) => {
-            this.sendToPlayer(player.playerId, {
-                type: 'PENDING_INTERACTION',
-                payload: sanitizePendingInteractionForViewer(pendingInteraction, player.playerId)
-            });
+        buildPendingInteractionMessages(this.players, pendingInteraction).forEach(({ playerId, message }) => {
+            this.sendToPlayer(playerId, message);
         });
     }
 
@@ -450,9 +415,7 @@ export class GameRoom implements RestorableRoomLike {
             return null;
         }
 
-        const visibleState = buildPlayerVisibleGameState(this.gameState, viewerId, {
-            geishaSet: this.geishaSet ?? DEFAULT_GEISHA_SET
-        });
+        const visibleState = buildViewerGameState(this.gameState, viewerId, this.geishaSet ?? DEFAULT_GEISHA_SET);
         if (visibleState?.geishaSet && !this.gameState.geishaSet) {
             this.gameState.geishaSet = visibleState.geishaSet;
         }
@@ -461,12 +424,7 @@ export class GameRoom implements RestorableRoomLike {
 
     // 依玩家視角建立發牌動畫序列（開局動畫一律只顯示背面）
     buildDealSequenceForPlayer(playerId: string) {
-        return this.dealSequence.map((step, index) => {
-            return {
-                ...step,
-                card: createMaskedCard(`${playerId}-deal`, index)
-            };
-        });
+        return buildMaskedDealSequence(this.dealSequence, playerId);
     }
 
     // 加入玩家到房間，並回傳加入結果
@@ -540,38 +498,7 @@ export class GameRoom implements RestorableRoomLike {
 
     // 廣播訊息給房間內所有玩家（非狀態同步使用）
     broadcast(message: WireMessage, excludePlayerId: string | null = null): void {
-        let successCount = 0;
-        this.players.forEach((player, index) => {
-            if (player.playerId !== excludePlayerId) {
-                if (player.ws.readyState === 1) {
-                    try {
-                        player.ws.send(JSON.stringify(message));
-                        successCount++;
-                    } catch (error) {
-                        backendLogger.error(`❌ 房間 ${this.roomId} 廣播失敗`, {
-                            roomId: this.roomId,
-                            playerId: player.playerId,
-                            type: typeof message?.type === 'string' ? message.type : 'unknown',
-                            error: error instanceof Error ? error.message : 'unknown'
-                        });
-                    }
-                } else {
-                    backendLogger.warn(`⚠️ 房間 ${this.roomId} 廣播時玩家連線狀態異常`, {
-                        roomId: this.roomId,
-                        playerId: player.playerId,
-                        readyState: player.ws.readyState
-                    });
-                }
-            }
-        });
-
-        backendLogger.diagnostic('🐞 [Server] 廣播訊息摘要', {
-            roomId: this.roomId,
-            successCount,
-            playerCount: this.players.length,
-            excludedPlayerId: excludePlayerId ?? undefined,
-            ...summarizeWebSocketMessage(message)
-        });
+        broadcastRoomMessage(this.roomId, this.players, message, excludePlayerId);
     }
 
     // 檢查房間是否已滿員
@@ -1612,18 +1539,4 @@ export class GameRoom implements RestorableRoomLike {
         this.broadcastGameState();
         this.endTurn();
     }
-}
-
-// 建立遮蔽卡片（避免洩漏對手手牌資訊）
-function createMaskedCard(prefix: string, index: number): ItemCard {
-    return {
-        id: `hidden-${prefix}-${index}`,
-        geishaId: 0,
-        type: 'hidden'
-    };
-}
-
-// 依指定長度建立遮蔽卡片陣列
-function createMaskedCards(count: number, prefix: string): ItemCard[] {
-    return Array.from({ length: count }, (_, index) => createMaskedCard(prefix, index));
 }
