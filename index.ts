@@ -61,6 +61,11 @@ import {
     pickNpcCompetitionGroupResponse,
     pickNpcGiftCardResponse
 } from './npc/npcStrategy.js';
+import {
+    determineWinner,
+    getNextRoundOrder,
+    resolveRoundBoard
+} from './game/roundResolution.js';
 import { createRoomRegistry } from './rooms/roomRegistry.js';
 import { GEISHA_SET_CONFIG_ERROR_MESSAGE } from './rooms/roomErrors.js';
 import { type RestorableRoomLike } from './rooms/roomRestore.js';
@@ -1388,26 +1393,21 @@ class GameRoom implements RestorableRoomLike {
             return;
         }
 
-        gameState.geishas.forEach((geisha) => {
-            const p1Count = this.countCardsForGeisha(firstPlayer, geisha.id);
-            const p2Count = this.countCardsForGeisha(secondPlayer, geisha.id);
-
-            if (p1Count > p2Count) {
-                geisha.controlledBy = firstPlayer.id;
-            } else if (p2Count > p1Count) {
-                geisha.controlledBy = secondPlayer.id;
+        const resolution = resolveRoundBoard(gameState.geishas, gameState.players);
+        gameState.geishas = resolution.geishas;
+        gameState.players.forEach((player) => {
+            const score = resolution.scores.get(player.id);
+            if (score) {
+                player.score.charm = score.charm;
+                player.score.tokens = score.tokens;
             }
-            // 平手時保持原狀，不移動好感指示物
         });
-
-        // 更新玩家分數資訊
-        this.updatePlayerScores();
 
         // 廣播結算後狀態，讓前端顯示回合結算結果
         this.broadcastGameState();
 
         // 檢查勝利條件
-        const winner = this.determineWinner();
+        const winner = determineWinner(this.gameState.players);
         if (winner) {
             this.gameState.phase = 'ended';
             this.gameState.winner = winner;
@@ -1515,79 +1515,13 @@ class GameRoom implements RestorableRoomLike {
         }
     }
 
-    // 統計玩家在特定藝妓上的卡片數量
-    countCardsForGeisha(player: GamePlayer, geishaId: number): number {
-        return player.playedCards.filter(card => card.geishaId === geishaId).length;
-    }
-
-    // 更新每位玩家的魅力值與好感數量
-    updatePlayerScores(): void {
-        if (!this.gameState) {
-            return;
-        }
-
-        const gameState = this.gameState;
-        gameState.players.forEach((player) => {
-            const controlled = gameState.geishas.filter(geisha => geisha.controlledBy === player.id);
-            player.score.tokens = controlled.length;
-            player.score.charm = controlled.reduce((total, geisha) => total + geisha.charmPoints, 0);
-        });
-    }
-
-    // 判定勝利條件（魅力值優先於好感數）
-    determineWinner(): string | null {
-        if (!this.gameState) {
-            return null;
-        }
-
-        const [playerA, playerB] = this.gameState.players;
-        if (!playerA || !playerB) {
-            return null;
-        }
-
-        const aCharm = playerA.score.charm;
-        const bCharm = playerB.score.charm;
-        const aTokens = playerA.score.tokens;
-        const bTokens = playerB.score.tokens;
-
-        if (aCharm >= 11 || bCharm >= 11) {
-            if (aCharm > bCharm) return playerA.id;
-            if (bCharm > aCharm) return playerB.id;
-            return null;
-        }
-
-        if (aTokens >= 4 || bTokens >= 4) {
-            if (aTokens > bTokens) return playerA.id;
-            if (bTokens > aTokens) return playerB.id;
-        }
-
-        return null;
-    }
-
-    // 取得下一輪的起始玩家順序
-    getNextRoundOrder(): string[] {
-        const currentPlayers = this.gameState?.players ?? [];
-        if (currentPlayers.length < 2) {
-            return [];
-        }
-
-        const firstPlayer = currentPlayers[0];
-        if (!firstPlayer) {
-            return [];
-        }
-        const currentStarter = this.lastRoundStarterId ?? firstPlayer.id;
-        const nextStarter = currentPlayers.find(player => player.id !== currentStarter)?.id ?? firstPlayer.id;
-
-        return [nextStarter, currentStarter];
-    }
-
     // 開始下一輪（不再重新決定順序，而是輪流先手）
     startNextRound(): void {
         if (!this.gameState) {
             return;
         }
 
-        const nextOrder = this.getNextRoundOrder();
+        const nextOrder = getNextRoundOrder(this.gameState.players, this.lastRoundStarterId);
         if (nextOrder.length < 2) {
             backendLogger.warn(`⚠️ 房間 ${this.roomId} 無法開始下一輪（玩家不足）`, {
                 roomId: this.roomId,

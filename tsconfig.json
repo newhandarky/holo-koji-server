@@ -16,6 +16,7 @@
   },
   "include": [
     "index.ts",
+    "game/**/*.ts",
     "http/**/*.ts",
     "npc/**/*.ts",
     "rooms/**/*.ts",
