@@ -15,12 +15,9 @@ import {
     DEFAULT_ROOM_SETUP_MODE,
     createRandomizedGeishas,
     createCustomSelectedGeishas,
-    buildDeckForGeishas,
     cloneGeishasForNextRound,
     cloneGeishas,
-    createPlayer,
     createWaitingGameState,
-    buildOpeningDealSummary,
     buildPlayerVisibleGameState,
     sanitizePendingInteractionForViewer,
     type ServerGameState
@@ -58,6 +55,11 @@ import {
     getNextRoundOrder,
     resolveRoundBoard
 } from '../game/roundResolution.js';
+import {
+    buildPreparedRoundState,
+    inspectRoundSetup,
+    type DealSequenceStep
+} from '../game/roundPreparation.js';
 import {
     getActionAvailabilityError,
     getPendingInteractionError,
@@ -109,13 +111,6 @@ type OrderDecisionState = {
     isDeciding: boolean;
     result: OrderDecisionResult | null;
     confirmations: Set<string>;
-};
-
-type DealSequenceStep = {
-    order?: number;
-    playerId: string;
-    card?: ItemCard;
-    [key: string]: unknown;
 };
 
 type RoundPreparationOptions = {
@@ -704,78 +699,25 @@ export class GameRoom implements RestorableRoomLike {
             return;
         }
 
-        // 以 baseGeishas 為基礎建立本回合藝妓資料
-        const geishasClone = cloneGeishas(baseGeishas);
-        const { deck, removedCard } = buildDeckForGeishas(geishasClone);
-
-        const dealingDeck = [...deck];
-        const dealSequence: DealSequenceStep[] = [];
-        const playerMetaMap = this.getPlayerMetaMap();
-        const playersState = playerIds.map((id) => createPlayer(id, playerMetaMap[id]));
-
-        // 每位玩家發 6 張手牌
-        for (let round = 0; round < 6; round += 1) {
-            playerIds.forEach((playerId, index) => {
-                const dealtCard = dealingDeck.shift();
-                if (!dealtCard) {
-                    backendLogger.error(`❌ 房間 ${this.roomId} 發牌時牌庫不足`, {
-                        roomId: this.roomId,
-                        remainingDeckSize: dealingDeck.length
-                    });
-                    return;
-                }
-
-                const targetPlayer = playersState[index];
-                if (!targetPlayer) {
-                    return;
-                }
-                targetPlayer.hand.push(dealtCard);
-                dealSequence.push({
-                    order: dealSequence.length,
-                    playerId,
-                    card: dealtCard
-                });
-            });
-        }
-
-        this.dealSequence = dealSequence;
-
         const resolvedRound = roundNumber ?? this.gameState?.round ?? 1;
-        const openingDeal = buildOpeningDealSummary(dealSequence, {
-            sequenceId: `opening-${this.roomId}-round-${resolvedRound}`
-        });
-
-        // 組合本回合遊戲狀態
-        this.gameState = {
-            gameId: this.roomId,
+        const preparation = buildPreparedRoundState({
+            roomId: this.roomId,
             hostId: this.hostId,
-            players: playersState,
-            geishas: geishasClone,
-            currentPlayer: 0,
-            phase: openOrderDecision ? 'deciding_order' : 'playing',
-            round: resolvedRound,
-            winner: null,
-            orderDecision: {
-                isOpen: openOrderDecision,
-                phase: openOrderDecision ? 'deciding' : 'result',
-                players: playerIds,
-                result: openOrderDecision ? undefined : {
-                    firstPlayer: playerIds[0] ?? '',
-                    secondPlayer: playerIds[1] ?? '',
-                    order: playerIds
-                },
-                confirmations: openOrderDecision ? [] : [...playerIds],
-                waitingFor: openOrderDecision ? playerIds : [],
-                currentPlayer: playerIds[0] ?? ''
-            },
-            drawPile: dealingDeck,
-            discardPile: [],
-            removedCard,
-            openingDeal,
-            settlement: undefined,
-            pendingInteraction: null,
-            lastAction: undefined
-        };
+            playerIds,
+            baseGeishas,
+            playerMetaMap: this.getPlayerMetaMap(),
+            roundNumber: resolvedRound,
+            openOrderDecision
+        });
+        if (!preparation.ok) {
+            backendLogger.error(`❌ 房間 ${this.roomId} 準備回合失敗`, {
+                roomId: this.roomId,
+                error: preparation.errorMessage
+            });
+            return;
+        }
+        this.dealSequence = preparation.dealSequence;
+        this.gameState = preparation.gameState;
 
         backendLogger.info(`🃏 房間 ${this.roomId} 已準備新回合`, {
             roomId: this.roomId,
@@ -1422,54 +1364,32 @@ export class GameRoom implements RestorableRoomLike {
             return;
         }
 
-        const totalPlayers = this.gameState.players.length;
-        const handSizes = this.gameState.players.map(player => player.hand.length);
-        const totalHandCards = handSizes.reduce((sum, count) => sum + count, 0);
-        const totalCardsInGame = totalHandCards + this.gameState.drawPile.length + (this.gameState.removedCard ? 1 : 0);
+        const diagnostics = inspectRoundSetup(this.gameState);
 
         // 規則：21 張牌中移除 1 張，剩 20 張進行發牌與牌堆
-        if (totalCardsInGame !== 21) {
+        if (diagnostics.hasUnexpectedTotalCards) {
             backendLogger.warn(`⚠️ 房間 ${this.roomId} 牌數異常`, {
                 roomId: this.roomId,
-                totalCardsInGame,
+                totalCardsInGame: diagnostics.totalCardsInGame,
                 expectedCards: 21
             });
         }
 
-        if (totalPlayers === 2) {
-            if (handSizes.some(size => size !== 6)) {
-                backendLogger.warn(`⚠️ 房間 ${this.roomId} 手牌數量異常`, {
-                    roomId: this.roomId,
-                    handSizes: handSizes.join(',')
-                });
-            }
-
-            if (this.gameState.drawPile.length !== 8) {
-                backendLogger.warn(`⚠️ 房間 ${this.roomId} 牌堆數量異常`, {
-                    roomId: this.roomId,
-                    drawPileSize: this.gameState.drawPile.length
-                });
-            }
+        if (diagnostics.hasUnexpectedHandSizes) {
+            backendLogger.warn(`⚠️ 房間 ${this.roomId} 手牌數量異常`, {
+                roomId: this.roomId,
+                handSizes: diagnostics.handSizes.join(',')
+            });
         }
 
-        // 檢查是否有重複卡片 ID
-        const cardIds = new Set<string>();
-        let hasDuplicate = false;
-
-        const collect = (card: ItemCard) => {
-            if (cardIds.has(card.id)) {
-                hasDuplicate = true;
-            }
-            cardIds.add(card.id);
-        };
-
-        this.gameState.players.forEach(player => player.hand.forEach(collect));
-        this.gameState.drawPile.forEach(collect);
-        if (this.gameState.removedCard) {
-            collect(this.gameState.removedCard);
+        if (diagnostics.hasUnexpectedDrawPileSize) {
+            backendLogger.warn(`⚠️ 房間 ${this.roomId} 牌堆數量異常`, {
+                roomId: this.roomId,
+                drawPileSize: diagnostics.drawPileSize
+            });
         }
 
-        if (hasDuplicate) {
+        if (diagnostics.hasDuplicateCardIds) {
             backendLogger.warn(`⚠️ 房間 ${this.roomId} 發現重複卡片 ID，請檢查洗牌與發牌流程`, {
                 roomId: this.roomId
             });
