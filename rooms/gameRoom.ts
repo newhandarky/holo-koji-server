@@ -1,5 +1,4 @@
 // server/rooms/gameRoom.ts - authoritative room runtime
-import { randomBytes } from 'node:crypto';
 import type {
     ActionType,
     CustomCharacterSelection,
@@ -7,7 +6,6 @@ import type {
     Geisha,
     GeishaSet,
     ItemCard,
-    LineAccountProfile,
     RoomSetupMode
 } from '@newhandarky/hanakoji-game-types';
 import {
@@ -18,6 +16,7 @@ import {
     cloneGeishasForNextRound,
     buildPlayerVisibleGameState,
     sanitizePendingInteractionForViewer,
+    type PlayerMetaMap,
     type ServerGameState
 } from '../utils/gameUtils.js';
 import {
@@ -26,7 +25,6 @@ import {
     summarizeWebSocketMessage
 } from '../utils/runtimeLogger.js';
 import {
-    createDisconnectedSocket,
     createNpcSocket,
     type RoomSeat,
     type RoomSocketLike
@@ -90,27 +88,19 @@ import {
     persistRoomSnapshot,
     type RoomSnapshot
 } from './roomSnapshot.js';
+import {
+    addRoomPlayer,
+    buildPlayerMetaMap,
+    detachRoomPlayer,
+    removeRoomPlayer,
+    type PlayerMetaPayload
+} from './roomMembership.js';
 
 type TimerHandle = ReturnType<typeof setTimeout>;
 
 type WireMessage = {
     type: string;
     payload?: unknown;
-};
-
-type PlayerMetaPayload = {
-    displayName?: unknown;
-    lineUserId?: unknown;
-    avatarUrl?: unknown;
-    accountProfile?: LineAccountProfile | null;
-    roomSessionToken?: unknown;
-};
-
-type NormalizedPlayerMeta = {
-    name: string;
-    lineUserId?: string;
-    avatarUrl?: string;
-    accountProfile?: LineAccountProfile;
 };
 
 type RoundPreparationOptions = {
@@ -124,38 +114,6 @@ type GameRoomPlayer = RoomSeat & {
 };
 
 type GamePlayer = ServerGameState['players'][number];
-
-const createRoomSessionToken = (): string => randomBytes(24).toString('hex');
-
-const normalizeRoomSessionToken = (token: unknown): string | null => (
-    typeof token === 'string' && token.trim() ? token.trim() : null
-);
-
-
-const normalizePlayerMeta = (playerId: string, payload: PlayerMetaPayload = {}): NormalizedPlayerMeta => {
-    const displayName = typeof payload.displayName === 'string' && payload.displayName.trim()
-        ? payload.displayName.trim()
-        : playerId;
-
-    const accountProfile = payload.accountProfile && typeof payload.accountProfile === 'object'
-        ? payload.accountProfile as LineAccountProfile
-        : null;
-
-    const lineUserId = typeof accountProfile?.lineUserId === 'string' && accountProfile.lineUserId.trim()
-        ? accountProfile.lineUserId.trim()
-        : undefined;
-
-    const avatarUrl = typeof accountProfile?.avatarUrl === 'string' && accountProfile.avatarUrl.trim()
-        ? accountProfile.avatarUrl.trim()
-        : undefined;
-
-    return {
-        name: displayName,
-        lineUserId,
-        avatarUrl,
-        accountProfile: accountProfile ?? undefined
-    };
-};
 
 export class GameRoom implements RestorableRoomLike {
     roomId: string;
@@ -267,15 +225,8 @@ export class GameRoom implements RestorableRoomLike {
         return npcId;
     }
 
-    getPlayerMetaMap(): Record<string, { name: string; lineUserId?: string; avatarUrl?: string }> {
-        return this.players.reduce<Record<string, { name: string; lineUserId?: string; avatarUrl?: string }>>((map, player) => {
-            map[player.playerId] = {
-                name: player.name ?? player.playerId,
-                lineUserId: player.lineUserId,
-                avatarUrl: player.avatarUrl
-            };
-            return map;
-        }, {});
+    getPlayerMetaMap(): PlayerMetaMap {
+        return buildPlayerMetaMap(this.players);
     }
 
     // 清除 NPC 計時器（避免重複執行）
@@ -520,39 +471,24 @@ export class GameRoom implements RestorableRoomLike {
 
     // 加入玩家到房間，並回傳加入結果
     addPlayer(playerId: string, ws: RoomSocketLike, meta: PlayerMetaPayload = {}) {
-        // 基本檢查：避免空白 playerId
-        if (!playerId) {
+        const update = addRoomPlayer(this.players, this.maxPlayers, playerId, ws, meta);
+        if (update.result === 'invalid') {
             backendLogger.warn('⚠️ 嘗試加入房間但 playerId 為空', {
                 roomId: this.roomId
             });
             return 'invalid';
         }
 
-        const normalizedMeta = normalizePlayerMeta(playerId, meta);
-        const requestedSessionToken = normalizeRoomSessionToken(meta.roomSessionToken);
-        const existingPlayer = this.players.find(player => player.playerId === playerId);
+        if (update.result === 'session-mismatch') {
+            backendLogger.warn(`⚠️ 玩家 ${playerId} 嘗試以不符 session token 重新加入房間 ${this.roomId}`, {
+                roomId: this.roomId,
+                playerId
+            });
+            return 'session-mismatch';
+        }
 
-        if (existingPlayer) {
-            if (existingPlayer.sessionToken && requestedSessionToken !== existingPlayer.sessionToken) {
-                backendLogger.warn(`⚠️ 玩家 ${playerId} 嘗試以不符 session token 重新加入房間 ${this.roomId}`, {
-                    roomId: this.roomId,
-                    playerId
-                });
-                return 'session-mismatch';
-            }
-            existingPlayer.ws = ws;
-            if (normalizedMeta.name) {
-                existingPlayer.name = normalizedMeta.name;
-            }
-            if (normalizedMeta.lineUserId) {
-                existingPlayer.lineUserId = normalizedMeta.lineUserId;
-            }
-            if (normalizedMeta.avatarUrl) {
-                existingPlayer.avatarUrl = normalizedMeta.avatarUrl;
-            }
-            if (normalizedMeta.accountProfile) {
-                existingPlayer.accountProfile = normalizedMeta.accountProfile;
-            }
+        if (update.result === 'existing') {
+            this.players = update.seats;
             backendLogger.info(`♻️ 玩家 ${playerId} 重新連線房間 ${this.roomId}`, {
                 roomId: this.roomId,
                 playerId
@@ -561,19 +497,11 @@ export class GameRoom implements RestorableRoomLike {
             return 'existing';
         }
 
-        if (this.players.length >= this.maxPlayers) {
+        if (update.result === 'full') {
             return 'full';
         }
 
-        this.players.push({
-            playerId,
-            ws,
-            sessionToken: requestedSessionToken ?? createRoomSessionToken(),
-            name: normalizedMeta.name,
-            lineUserId: normalizedMeta.lineUserId,
-            avatarUrl: normalizedMeta.avatarUrl,
-            accountProfile: normalizedMeta.accountProfile
-        });
+        this.players = update.seats;
         backendLogger.info(`✅ 玩家 ${playerId} 加入房間 ${this.roomId}`, {
             roomId: this.roomId,
             playerId,
@@ -585,7 +513,7 @@ export class GameRoom implements RestorableRoomLike {
 
     // 從房間移除玩家
     removePlayer(playerId: string): void {
-        this.players = this.players.filter(p => p.playerId !== playerId);
+        this.players = removeRoomPlayer(this.players, playerId);
         backendLogger.info(`❌ 玩家 ${playerId} 離開房間 ${this.roomId}`, {
             roomId: this.roomId,
             playerId,
@@ -595,16 +523,12 @@ export class GameRoom implements RestorableRoomLike {
     }
 
     detachPlayerConnection(playerId: string, ws: RoomSocketLike | null = null) {
-        const player = this.players.find(p => p.playerId === playerId);
-        if (!player) {
+        const update = detachRoomPlayer(this.players, playerId, ws);
+        if (!update.detached) {
             return false;
         }
 
-        if (ws && player.ws !== ws) {
-            return false;
-        }
-
-        player.ws = createDisconnectedSocket();
+        this.players = update.seats;
         backendLogger.info(`🔌 玩家 ${playerId} 已斷線但保留房間座位`, {
             roomId: this.roomId,
             playerId,
