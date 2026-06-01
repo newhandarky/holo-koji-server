@@ -5,7 +5,6 @@ import type {
     Geisha,
     GeishaSet,
     JoinRoomPayload,
-    LineAccountProfile,
     RoomSetupMode
 } from '@newhandarky/hanakoji-game-types';
 import {
@@ -36,18 +35,12 @@ import { normalizeNpcDifficulty } from '../npc/npcConfig.js';
 import { backendLogger } from '../utils/runtimeLogger.js';
 import type { GameActionPayload, ServerAction } from '../game/actionValidation.js';
 import type { WebSocketConnectionContext } from './connectionContext.js';
+import type {
+    AddPlayerResult,
+    PlayerMetaPayload
+} from '../rooms/roomMembership.js';
 
 type JsonObject = Record<string, unknown>;
-
-type PlayerMetaPayload = {
-    displayName?: unknown;
-    lineUserId?: unknown;
-    avatarUrl?: unknown;
-    accountProfile?: LineAccountProfile | null;
-    roomSessionToken?: unknown;
-};
-
-type AddPlayerResult = 'invalid' | 'existing' | 'full' | 'session-mismatch' | 'added';
 
 export interface WebSocketRoomLike extends RestorableRoomLike {
     players: Array<RoomSeat & { sessionToken?: string }>;
