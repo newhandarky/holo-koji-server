@@ -34,26 +34,10 @@ import {
 } from '../rooms/roomErrors.js';
 import { normalizeNpcDifficulty } from '../npc/npcConfig.js';
 import { backendLogger } from '../utils/runtimeLogger.js';
+import type { GameActionPayload, ServerAction } from '../game/actionValidation.js';
 import type { WebSocketConnectionContext } from './connectionContext.js';
 
 type JsonObject = Record<string, unknown>;
-
-type GameActionPayload = {
-    type?: unknown;
-    actionType?: unknown;
-    action?: unknown;
-    cards?: unknown;
-    cardIds?: unknown;
-    cardId?: unknown;
-    chosenCardId?: unknown;
-    chosenGroupIndex?: unknown;
-    groups?: unknown;
-};
-
-type ServerAction = {
-    type: string;
-    payload?: GameActionPayload;
-};
 
 type PlayerMetaPayload = {
     displayName?: unknown;
