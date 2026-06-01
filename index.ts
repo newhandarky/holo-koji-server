@@ -25,7 +25,6 @@ import {
     createWaitingGameState,
     buildOpeningDealSummary,
     buildPlayerVisibleGameState,
-    markOpeningDealNotReplayable,
     sanitizePendingInteractionForViewer,
     type ServerGameState
 } from './utils/gameUtils.js';
@@ -68,12 +67,19 @@ import {
 } from './game/roundResolution.js';
 import {
     getActionAvailabilityError,
-    getCardOwnershipError,
     getPendingInteractionError,
     toCompetitionGroups,
     toStringArray,
     type ServerAction
 } from './game/actionValidation.js';
+import {
+    applySecretAction,
+    applyTradeOffAction,
+    initiateCompetitionAction,
+    initiateGiftAction,
+    resolveCompetitionAction,
+    resolveGiftAction
+} from './game/actionTransitions.js';
 import { createRoomRegistry } from './rooms/roomRegistry.js';
 import { GEISHA_SET_CONFIG_ERROR_MESSAGE } from './rooms/roomErrors.js';
 import { type RestorableRoomLike } from './rooms/roomRestore.js';
@@ -1105,17 +1111,6 @@ class GameRoom implements RestorableRoomLike {
         return this.getPlayerState(opponentId);
     }
 
-    // 標記玩家行動指示物已使用
-    markActionTokenUsed(player: GamePlayer, actionType: ActionType): void {
-        const token = player.actionTokens.find(item => item.type === actionType);
-        if (token) {
-            token.used = true;
-        }
-        if (this.gameState?.openingDeal?.replayable) {
-            this.gameState.openingDeal = markOpeningDealNotReplayable(this.gameState.openingDeal);
-        }
-    }
-
     // 抽牌給指定玩家（從牌堆頂端）
     drawCardForPlayer(player: GamePlayer): ItemCard | null {
         if (!this.gameState || this.gameState.drawPile.length === 0) {
@@ -1574,17 +1569,6 @@ class GameRoom implements RestorableRoomLike {
         return true;
     }
 
-    // 驗證卡片是否屬於玩家
-    validateCardOwnership(player: GamePlayer, cardIds: string[]): boolean {
-        const errorMessage = getCardOwnershipError(player, cardIds);
-        if (errorMessage) {
-            this.sendError(player.id, errorMessage);
-            return false;
-        }
-
-        return true;
-    }
-
     // 驗證互動狀態（避免同時進行多個互動）
     validatePendingInteraction(actionType: string, playerId: string): boolean {
         const errorMessage = getPendingInteractionError(this.gameState?.pendingInteraction, actionType);
@@ -1673,45 +1657,32 @@ class GameRoom implements RestorableRoomLike {
 
     // 執行密約行動（選 1 張卡蓋牌）
     handlePlaySecret(player: GamePlayer, cardId?: string): void {
-        if (!cardId) {
-            backendLogger.warn('⚠️ PLAY_SECRET 缺少 cardId', {
-                roomId: this.roomId,
-                playerId: player.id
-            });
-            this.sendError(player.id, '請選擇 1 張卡片作為密約');
-            return;
-        }
-
-        const cardIndex = player.hand.findIndex(card => card.id === cardId);
-        if (cardIndex === -1) {
-            backendLogger.warn(`⚠️ 玩家 ${player.id} 的手牌中找不到卡片`, {
+        const result = applySecretAction(player, cardId, this.gameState?.openingDeal);
+        if (!result.ok) {
+            backendLogger.warn('⚠️ PLAY_SECRET 驗證失敗', {
                 roomId: this.roomId,
                 playerId: player.id,
-                cardId
+                error: result.errorMessage
             });
-            this.sendError(player.id, '卡片不在你的手牌中');
+            this.sendError(player.id, result.errorMessage);
             return;
         }
 
-        const [card] = player.hand.splice(cardIndex, 1);
-        if (!card) {
-            return;
-        }
-        player.secretCards.push(card);
-
-        this.markActionTokenUsed(player, 'secret');
+        const { player: updatedPlayer, openingDeal, revealedCardIds } = result.value;
         if (this.gameState) {
-            this.gameState.lastAction = { playerId: player.id, action: 'secret' };
+            this.gameState.players = this.gameState.players.map(item => item.id === updatedPlayer.id ? updatedPlayer : item);
+            this.gameState.openingDeal = openingDeal;
+            this.gameState.lastAction = { playerId: updatedPlayer.id, action: 'secret' };
         }
 
         this.players.forEach((recipient) => {
-            const shouldReveal = recipient.playerId === player.id;
+            const shouldReveal = recipient.playerId === updatedPlayer.id;
             this.sendToPlayer(recipient.playerId, {
                 type: 'ACTION_EXECUTED',
                 payload: {
-                    playerId: player.id,
+                    playerId: updatedPlayer.id,
                     action: 'secret',
-                    cardIds: shouldReveal ? [card.id] : []
+                    cardIds: shouldReveal ? revealedCardIds : []
                 }
             });
         });
@@ -1722,56 +1693,32 @@ class GameRoom implements RestorableRoomLike {
 
     // 執行取捨行動（選 2 張卡丟棄）
     handleTradeOff(player: GamePlayer, cardIds: string[] = []): void {
-        if (!Array.isArray(cardIds) || cardIds.length !== 2) {
-            backendLogger.warn('⚠️ PLAY_TRADE_OFF 需要 2 張卡片', {
+        const result = applyTradeOffAction(player, cardIds, this.gameState?.openingDeal);
+        if (!result.ok) {
+            backendLogger.warn('⚠️ PLAY_TRADE_OFF 驗證失敗', {
                 roomId: this.roomId,
-                playerId: player.id
+                playerId: player.id,
+                error: result.errorMessage
             });
-            this.sendError(player.id, '取捨必須選擇 2 張卡片');
+            this.sendError(player.id, result.errorMessage);
             return;
         }
 
-        if (!this.validateCardOwnership(player, cardIds)) {
-            return;
-        }
-
-        const collected: ItemCard[] = [];
-
-        cardIds.forEach(cardId => {
-            const index = player.hand.findIndex(card => card.id === cardId);
-            if (index !== -1) {
-                const [card] = player.hand.splice(index, 1);
-                if (card) {
-                    collected.push(card);
-                }
-            }
-        });
-
-        if (collected.length !== 2) {
-            backendLogger.warn('⚠️ PLAY_TRADE_OFF 無法找到所有指定卡片', {
-                roomId: this.roomId,
-                playerId: player.id
-            });
-            player.hand.push(...collected); // 還原
-            this.sendError(player.id, '取捨卡片驗證失敗');
-            return;
-        }
-
-        player.discardedCards.push(...collected);
-
-        this.markActionTokenUsed(player, 'trade-off');
+        const { player: updatedPlayer, openingDeal, revealedCardIds } = result.value;
         if (this.gameState) {
-            this.gameState.lastAction = { playerId: player.id, action: 'trade-off' };
+            this.gameState.players = this.gameState.players.map(item => item.id === updatedPlayer.id ? updatedPlayer : item);
+            this.gameState.openingDeal = openingDeal;
+            this.gameState.lastAction = { playerId: updatedPlayer.id, action: 'trade-off' };
         }
 
         this.players.forEach((recipient) => {
-            const shouldReveal = recipient.playerId === player.id;
+            const shouldReveal = recipient.playerId === updatedPlayer.id;
             this.sendToPlayer(recipient.playerId, {
                 type: 'ACTION_EXECUTED',
                 payload: {
-                    playerId: player.id,
+                    playerId: updatedPlayer.id,
                     action: 'trade-off',
-                    cardIds: shouldReveal ? cardIds : []
+                    cardIds: shouldReveal ? revealedCardIds : []
                 }
             });
         });
@@ -1782,135 +1729,66 @@ class GameRoom implements RestorableRoomLike {
 
     // 執行贈予行動（選 3 張卡給對手挑）
     handleInitiateGift(player: GamePlayer, cardIds: string[] = []): void {
-        if (!Array.isArray(cardIds) || cardIds.length !== 3) {
-            backendLogger.warn('⚠️ INITIATE_GIFT 需要 3 張卡片', {
-                roomId: this.roomId,
-                playerId: player.id
-            });
-            this.sendError(player.id, '贈予必須選擇 3 張卡片');
-            return;
-        }
-
-        if (!this.validateCardOwnership(player, cardIds)) {
-            return;
-        }
-
         const opponentId = this.getOpponentId(player.id);
-        if (!opponentId) {
-            backendLogger.warn('⚠️ 找不到對手，無法執行贈予', {
+        const result = initiateGiftAction(player, opponentId, cardIds, this.gameState?.openingDeal);
+        if (!result.ok) {
+            backendLogger.warn('⚠️ INITIATE_GIFT 驗證失敗', {
                 roomId: this.roomId,
-                playerId: player.id
+                playerId: player.id,
+                error: result.errorMessage
             });
-            this.sendError(player.id, '目前沒有對手可進行贈予');
+            this.sendError(player.id, result.errorMessage);
             return;
         }
 
-        const offeredCards: ItemCard[] = [];
-        cardIds.forEach(cardId => {
-            const index = player.hand.findIndex(card => card.id === cardId);
-            if (index !== -1) {
-                const [card] = player.hand.splice(index, 1);
-                if (card) {
-                    offeredCards.push(card);
-                }
-            }
-        });
-
-        if (offeredCards.length !== 3) {
-            backendLogger.warn('⚠️ INITIATE_GIFT 無法找到所有指定卡片', {
-                roomId: this.roomId,
-                playerId: player.id
-            });
-            player.hand.push(...offeredCards);
-            this.sendError(player.id, '贈予卡片驗證失敗');
-            return;
-        }
-
-        this.markActionTokenUsed(player, 'gift');
         if (!this.gameState) {
             return;
         }
-        this.gameState.pendingInteraction = {
-            type: 'GIFT_SELECTION',
-            initiatorId: player.id,
-            targetPlayerId: opponentId,
-            offeredCards
-        };
-
-        this.gameState.lastAction = { playerId: player.id, action: 'gift' };
+        this.gameState.players = this.gameState.players.map(item => item.id === result.value.player.id ? result.value.player : item);
+        this.gameState.openingDeal = result.value.openingDeal;
+        this.gameState.pendingInteraction = result.value.pendingInteraction;
+        this.gameState.lastAction = { playerId: result.value.player.id, action: 'gift' };
 
         this.sendPendingInteractionState();
 
         this.broadcastGameState();
 
         // 若目標是 NPC，安排自動回應
-        if (this.isNpcPlayerId(opponentId)) {
+        if (this.isNpcPlayerId(result.value.pendingInteraction.targetPlayerId)) {
             this.scheduleNpcResponse();
         }
     }
 
     // 處理對手回應贈予（選 1 張卡）
     handleResolveGift(playerId: string, chosenCardId?: string): void {
-        const pending = this.gameState?.pendingInteraction;
-
-        if (!pending || pending.type !== 'GIFT_SELECTION') {
-            backendLogger.warn('⚠️ 當前沒有贈予互動等待處理', {
+        const result = resolveGiftAction(
+            this.gameState?.players ?? [],
+            this.gameState?.pendingInteraction,
+            playerId,
+            chosenCardId
+        );
+        if (!result.ok) {
+            backendLogger.warn('⚠️ RESOLVE_GIFT 驗證失敗', {
                 roomId: this.roomId,
-                playerId
+                playerId,
+                error: result.errorMessage
             });
-            this.sendError(playerId, '目前沒有等待處理的贈予');
+            this.sendError(playerId, result.errorMessage);
             return;
         }
-
-        if (pending.targetPlayerId !== playerId) {
-            backendLogger.warn('⚠️ 非目標玩家嘗試處理贈予', {
-                roomId: this.roomId,
-                playerId
-            });
-            this.sendError(playerId, '你不是贈予的目標玩家');
-            return;
-        }
-
-        const offeredCards = pending.offeredCards ?? [];
-        const chosenCard = offeredCards.find(card => card.id === chosenCardId);
-        if (!chosenCard) {
-            backendLogger.warn('⚠️ RESOLVE_GIFT 選擇的卡片不存在', {
-                roomId: this.roomId,
-                playerId
-            });
-            this.sendError(playerId, '選擇的卡片不存在');
-            return;
-        }
-
-        const opponent = this.getPlayerState(pending.initiatorId);
-        const receiver = this.getPlayerState(playerId);
-
-        if (!opponent || !receiver) {
-            backendLogger.warn('⚠️ 找不到贈予雙方玩家', {
-                roomId: this.roomId,
-                playerId
-            });
-            this.sendError(playerId, '找不到贈予對象');
-            return;
-        }
-
-        // 贈予結果：卡片直接加入各自的藝妓區（以 playedCards 代表）
-        receiver.playedCards.push(chosenCard);
-
-        const remaining = offeredCards.filter(card => card.id !== chosenCardId);
-        opponent.playedCards.push(...remaining);
 
         if (this.gameState) {
-            this.gameState.pendingInteraction = null;
+            this.gameState.players = result.value.players;
+            this.gameState.pendingInteraction = result.value.pendingInteraction;
         }
 
         this.broadcast({
             type: 'INTERACTION_RESOLVED',
             payload: {
                 interaction: 'GIFT_SELECTION',
-                initiatorId: opponent.id,
-                targetPlayerId: receiver.id,
-                chosenCardId
+                initiatorId: result.value.initiatorId,
+                targetPlayerId: result.value.targetPlayerId,
+                chosenCardId: result.value.chosenCardId
             }
         });
 
@@ -1920,153 +1798,66 @@ class GameRoom implements RestorableRoomLike {
 
     // 執行競爭行動（選 4 張卡分 2 組）
     handleInitiateCompetition(player: GamePlayer, groups: string[][] = []): void {
-        if (!Array.isArray(groups) || groups.length !== 2 || groups.some(group => group.length !== 2)) {
-            backendLogger.warn('⚠️ INITIATE_COMPETITION 需要分成兩組且每組 2 張', {
-                roomId: this.roomId,
-                playerId: player.id
-            });
-            this.sendError(player.id, '競爭必須分成兩組，每組 2 張卡片');
-            return;
-        }
-
         const opponentId = this.getOpponentId(player.id);
-        if (!opponentId) {
-            backendLogger.warn('⚠️ 找不到對手，無法進行競爭', {
+        const result = initiateCompetitionAction(player, opponentId, groups, this.gameState?.openingDeal);
+        if (!result.ok) {
+            backendLogger.warn('⚠️ INITIATE_COMPETITION 驗證失敗', {
                 roomId: this.roomId,
-                playerId: player.id
+                playerId: player.id,
+                error: result.errorMessage
             });
-            this.sendError(player.id, '目前沒有對手可進行競爭');
+            this.sendError(player.id, result.errorMessage);
             return;
         }
 
-        const flattened = groups.flat();
-
-        if (!this.validateCardOwnership(player, flattened)) {
-            return;
-        }
-        const extractedCards: ItemCard[] = [];
-
-        flattened.forEach(cardId => {
-            const index = player.hand.findIndex(card => card.id === cardId);
-            if (index !== -1) {
-                const [card] = player.hand.splice(index, 1);
-                if (card) {
-                    extractedCards.push(card);
-                }
-            }
-        });
-
-        if (extractedCards.length !== 4) {
-            backendLogger.warn('⚠️ INITIATE_COMPETITION 無法找到所有指定卡片', {
-                roomId: this.roomId,
-                playerId: player.id
-            });
-            player.hand.push(...extractedCards);
-            this.sendError(player.id, '競爭卡片驗證失敗');
-            return;
-        }
-
-        // 根據原分組恢復卡片資料
-        const groupedCards = groups.map(group => group
-            .map(cardId => extractedCards.find(card => card.id === cardId))
-            .filter((card): card is ItemCard => Boolean(card)));
-
-        if (groupedCards.some(group => group.length !== 2)) {
-            backendLogger.warn('⚠️ INITIATE_COMPETITION 組別卡片無法匹配', {
-                roomId: this.roomId,
-                playerId: player.id
-            });
-            player.hand.push(...extractedCards);
-            this.sendError(player.id, '競爭分組驗證失敗');
-            return;
-        }
-
-        this.markActionTokenUsed(player, 'competition');
         if (!this.gameState) {
             return;
         }
-        this.gameState.pendingInteraction = {
-            type: 'COMPETITION_SELECTION',
-            initiatorId: player.id,
-            targetPlayerId: opponentId,
-            groups: groupedCards
-        };
-
-        this.gameState.lastAction = { playerId: player.id, action: 'competition' };
+        this.gameState.players = this.gameState.players.map(item => item.id === result.value.player.id ? result.value.player : item);
+        this.gameState.openingDeal = result.value.openingDeal;
+        this.gameState.pendingInteraction = result.value.pendingInteraction;
+        this.gameState.lastAction = { playerId: result.value.player.id, action: 'competition' };
 
         this.sendPendingInteractionState();
 
         this.broadcastGameState();
 
         // 若目標是 NPC，安排自動回應
-        if (this.isNpcPlayerId(opponentId)) {
+        if (this.isNpcPlayerId(result.value.pendingInteraction.targetPlayerId)) {
             this.scheduleNpcResponse();
         }
     }
 
     // 處理對手回應競爭（選 1 組）
     handleResolveCompetition(playerId: string, chosenGroupIndex?: number): void {
-        const pending = this.gameState?.pendingInteraction;
-
-        if (!pending || pending.type !== 'COMPETITION_SELECTION') {
-            backendLogger.warn('⚠️ 當前沒有競爭互動等待處理', {
+        const result = resolveCompetitionAction(
+            this.gameState?.players ?? [],
+            this.gameState?.pendingInteraction,
+            playerId,
+            chosenGroupIndex
+        );
+        if (!result.ok) {
+            backendLogger.warn('⚠️ RESOLVE_COMPETITION 驗證失敗', {
                 roomId: this.roomId,
-                playerId
+                playerId,
+                error: result.errorMessage
             });
-            this.sendError(playerId, '目前沒有等待處理的競爭');
+            this.sendError(playerId, result.errorMessage);
             return;
         }
-
-        if (pending.targetPlayerId !== playerId) {
-            backendLogger.warn('⚠️ 非目標玩家嘗試處理競爭', {
-                roomId: this.roomId,
-                playerId
-            });
-            this.sendError(playerId, '你不是競爭的目標玩家');
-            return;
-        }
-
-        const groups = pending.groups ?? [];
-        const selectedGroup = typeof chosenGroupIndex === 'number' ? groups[chosenGroupIndex] : undefined;
-        if (!selectedGroup) {
-            backendLogger.warn('⚠️ RESOLVE_COMPETITION 選擇的組別不存在', {
-                roomId: this.roomId,
-                playerId
-            });
-            this.sendError(playerId, '選擇的組別不存在');
-            return;
-        }
-
-        const opponentGroupIndex = chosenGroupIndex === 0 ? 1 : 0;
-        const opponentGroup = groups[opponentGroupIndex] ?? [];
-
-        const initiator = this.getPlayerState(pending.initiatorId);
-        const receiver = this.getPlayerState(playerId);
-
-        if (!initiator || !receiver) {
-            backendLogger.warn('⚠️ 找不到競爭雙方玩家', {
-                roomId: this.roomId,
-                playerId
-            });
-            this.sendError(playerId, '找不到競爭對象');
-            return;
-        }
-
-        // 競爭結果：卡片直接加入各自的藝妓區（以 playedCards 代表）
-        receiver.playedCards.push(...selectedGroup);
-        initiator.playedCards.push(...opponentGroup);
 
         if (this.gameState) {
-            this.gameState.pendingInteraction = null;
+            this.gameState.players = result.value.players;
+            this.gameState.pendingInteraction = result.value.pendingInteraction;
         }
 
         this.broadcast({
             type: 'INTERACTION_RESOLVED',
             payload: {
                 interaction: 'COMPETITION_SELECTION',
-                initiatorId: initiator.id,
-                targetPlayerId: receiver.id,
-                chosenGroupIndex
+                initiatorId: result.value.initiatorId,
+                targetPlayerId: result.value.targetPlayerId,
+                chosenGroupIndex: result.value.chosenGroupIndex
             }
         });
 
