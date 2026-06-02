@@ -470,14 +470,20 @@ export class GameRoom implements RestorableRoomLike {
     }
 
     // 從房間移除玩家
-    removePlayer(playerId: string): void {
-        this.players = removeRoomPlayer(this.players, playerId);
+    removePlayer(playerId: string, ws: RoomSocketLike | null = null): boolean {
+        const nextPlayers = removeRoomPlayer(this.players, playerId, ws);
+        if (nextPlayers.length === this.players.length) {
+            return false;
+        }
+
+        this.players = nextPlayers;
         backendLogger.info(`❌ 玩家 ${playerId} 離開房間 ${this.roomId}`, {
             roomId: this.roomId,
             playerId,
             playerCount: this.players.length
         });
         this.persistRoomSnapshot();
+        return true;
     }
 
     detachPlayerConnection(playerId: string, ws: RoomSocketLike | null = null) {
@@ -923,6 +929,54 @@ export class GameRoom implements RestorableRoomLike {
         }, delay);
     }
 
+    scheduleNextRound(): void {
+        this.roundResolveTimer = replaceScheduledTimer(this.scheduler, this.roundResolveTimer, () => {
+            this.roundResolveTimer = null;
+            this.startNextRound();
+        }, 2500);
+    }
+
+    resumeRestoredRuntime(): void {
+        if (!this.gameState) {
+            return;
+        }
+
+        if (this.gameState.phase === 'deciding_order') {
+            const result = this.gameState.orderDecision?.result;
+            if (!result) {
+                this.startOrderDecision();
+                return;
+            }
+
+            this.orderDecisionState = {
+                isDeciding: false,
+                result: {
+                    firstPlayer: result.firstPlayer,
+                    secondPlayer: result.secondPlayer,
+                    order: [...result.order]
+                },
+                confirmations: new Set(this.gameState.orderDecision.confirmations ?? [])
+            };
+            if (this.orderDecisionState.confirmations.size >= this.players.length) {
+                this.startReadyCheck();
+            }
+            return;
+        }
+
+        if (this.gameState.phase === 'resolution') {
+            this.scheduleNextRound();
+            return;
+        }
+
+        if (this.gameState.phase === 'playing') {
+            if (canScheduleNpcResponse(this.gameState.pendingInteraction, this.npcId)) {
+                this.scheduleNpcResponse();
+                return;
+            }
+            this.scheduleNpcTurn();
+        }
+    }
+
     // NPC 執行回合行動
     performNpcAction(): void {
         const npcId = this.npcId;
@@ -1047,14 +1101,7 @@ export class GameRoom implements RestorableRoomLike {
         }
 
         // 準備下一輪（保留好感指示物）
-        if (this.roundResolveTimer) {
-            clearTimeout(this.roundResolveTimer);
-        }
-
-        this.roundResolveTimer = setTimeout(() => {
-            this.roundResolveTimer = null;
-            this.startNextRound();
-        }, 2500);
+        this.scheduleNextRound();
     }
 
     // 驗證回合發牌與牌堆分配是否正確（用於偵錯與防呆）

@@ -230,3 +230,62 @@ test('GameRoom schedules npc turns with the existing delay and replaces stale ti
     assert.equal(scheduled[1]?.delayMs, 700);
     assert.deepEqual(cleared, [1]);
 });
+
+test('GameRoom resumes restored order confirmation state and runtime timers', () => {
+    const orderScheduler = createFakeScheduler();
+    const orderRoom = new GameRoom('room-order-restore');
+    orderRoom.players = [
+        { playerId: 'host', sessionToken: 'host-token', ws: createDisconnectedSocket() },
+        { playerId: 'guest', sessionToken: 'guest-token', ws: createDisconnectedSocket() }
+    ];
+    assert.equal(orderRoom.regenerateBaseGeishas(), true);
+    assert.equal(orderRoom.prepareOrderDecisionState(), true);
+    orderRoom.gameState!.orderDecision = {
+        ...orderRoom.gameState!.orderDecision,
+        phase: 'result',
+        result: {
+            firstPlayer: 'host',
+            secondPlayer: 'guest',
+            order: ['host', 'guest']
+        },
+        confirmations: ['host'],
+        waitingFor: ['guest']
+    };
+    const restoredOrderRoom = restoreRoomFromSnapshot(orderRoom.buildRoomSnapshot(), {
+        createRoom: roomId => new GameRoom(roomId, orderScheduler.scheduler)
+    }).room;
+
+    assert.equal(restoredOrderRoom?.orderDecisionState.result?.firstPlayer, 'host');
+    assert.deepEqual(Array.from(restoredOrderRoom?.orderDecisionState.confirmations ?? []), ['host']);
+
+    const npcScheduler = createFakeScheduler();
+    const npcRoom = new GameRoom('room-npc-restore');
+    npcRoom.players = [{ playerId: 'host', sessionToken: 'host-token', ws: createDisconnectedSocket() }];
+    const npcId = npcRoom.addNpcPlayer('hard');
+    assert.equal(npcRoom.regenerateBaseGeishas(), true);
+    npcRoom.gameState = {
+        phase: 'playing',
+        currentPlayer: 1,
+        pendingInteraction: null,
+        players: [{ id: 'host' }, { id: npcId }]
+    } as NonNullable<typeof npcRoom.gameState>;
+    restoreRoomFromSnapshot(npcRoom.buildRoomSnapshot(), {
+        createRoom: roomId => new GameRoom(roomId, npcScheduler.scheduler)
+    });
+
+    assert.equal(npcScheduler.scheduled[0]?.delayMs, 700);
+
+    const resolutionScheduler = createFakeScheduler();
+    const resolutionRoom = new GameRoom('room-resolution-restore');
+    resolutionRoom.players = [
+        { playerId: 'host', sessionToken: 'host-token', ws: createDisconnectedSocket() },
+        { playerId: 'guest', sessionToken: 'guest-token', ws: createDisconnectedSocket() }
+    ];
+    assert.equal(resolutionRoom.regenerateBaseGeishas(), true);
+    resolutionRoom.gameState = { phase: 'resolution' } as NonNullable<typeof resolutionRoom.gameState>;
+    restoreRoomFromSnapshot(resolutionRoom.buildRoomSnapshot(), {
+        createRoom: roomId => new GameRoom(roomId, resolutionScheduler.scheduler)
+    });
+
+    assert.equal(resolutionScheduler.scheduled[0]?.delayMs, 2500);
+});

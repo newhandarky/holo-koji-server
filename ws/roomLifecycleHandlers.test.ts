@@ -153,6 +153,22 @@ test('handleJoinRoom reconnects matching sessions with viewer-safe state', async
     });
 });
 
+test('handleJoinRoom rejects npc seat takeover attempts', async () => {
+    const socket = makeSocket();
+    const deps = makeDeps();
+    const room = prepareWaitingRoom('NPC-TAKEOVER');
+    const npcId = room.addNpcPlayer('easy');
+    room.gameState = { phase: 'playing' } as NonNullable<typeof room.gameState>;
+    deps.rooms.set('NPC-TAKEOVER', room);
+
+    await handleJoinRoom(socket.ws, {
+        roomId: 'NPC-TAKEOVER',
+        playerId: npcId
+    }, createConnectionContext('test'), deps);
+
+    assert.equal(socket.messages[0]?.payload?.code, 'PLAYER_ID_TAKEN');
+});
+
 test('handleJoinRoom schedules full waiting rooms after 1000ms', async () => {
     const socket = makeSocket();
     const { scheduler, scheduled } = makeScheduler();
@@ -169,6 +185,7 @@ test('handleLeaveRoom removes waiting seats and deletes empty rooms', () => {
     const socket = makeSocket();
     const deps = makeDeps();
     const room = prepareWaitingRoom('LEAVE');
+    room.players[0]!.ws = socket.ws;
     const broadcasts: Array<{ type: string; payload?: unknown }> = [];
     room.broadcast = message => {
         broadcasts.push(message);
@@ -193,6 +210,7 @@ test('handleLeaveRoom deletes waiting rooms that retain only an npc seat', () =>
     const socket = makeSocket();
     const deps = makeDeps();
     const room = prepareWaitingRoom('NPC-LEAVE');
+    room.players[0]!.ws = socket.ws;
     room.addNpcPlayer('easy');
     deps.rooms.set('NPC-LEAVE', room);
     const context = createConnectionContext('test');
@@ -221,4 +239,35 @@ test('handleLeaveRoom detaches active players without deleting seats', () => {
     assert.equal(deps.rooms.has('ACTIVE-LEAVE'), true);
     assert.equal(room.players.length, 1);
     assert.equal(room.players[0]?.ws.readyState, 3);
+});
+
+test('handleLeaveRoom ignores stale waiting-room sockets after reconnect', () => {
+    const staleSocket = makeSocket();
+    const currentSocket = makeSocket();
+    const deps = makeDeps();
+    const room = prepareWaitingRoom('STALE-LEAVE');
+    room.players[0]!.ws = staleSocket.ws;
+    assert.equal(room.addPlayer('host', currentSocket.ws, { roomSessionToken: 'host-token' }), 'existing');
+    deps.rooms.set('STALE-LEAVE', room);
+    const context = createConnectionContext('test');
+    context.currentRoomId = 'STALE-LEAVE';
+    context.currentPlayerId = 'host';
+
+    handleLeaveRoom(staleSocket.ws, context, deps);
+
+    assert.equal(deps.rooms.has('STALE-LEAVE'), true);
+    assert.equal(room.players[0]?.ws, currentSocket.ws);
+    assert.deepEqual(deps.deleted, []);
+});
+
+test('handleCreateRoom rejects repeated room attachment on the same socket', async () => {
+    const socket = makeSocket();
+    const deps = makeDeps();
+    const context = createConnectionContext('test');
+
+    await handleCreateRoom(socket.ws, { playerId: 'host' }, context, deps);
+    await handleCreateRoom(socket.ws, { playerId: 'host' }, context, deps);
+
+    assert.equal(deps.rooms.size, 1);
+    assert.equal(socket.messages.at(-1)?.payload?.code, 'ALREADY_IN_ROOM');
 });

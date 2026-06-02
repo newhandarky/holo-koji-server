@@ -76,6 +76,16 @@ test('addRoomPlayer reconnects matching sessions with a new socket and preserved
     assert.notEqual(result.seats[0], seats[0]);
 });
 
+test('addRoomPlayer rejects tokenless and npc seat reconnect attempts', () => {
+    const tokenlessSeat = { ...makeSeat(), sessionToken: undefined };
+    const npcSeat = { ...makeSeat('npc'), isNpc: true };
+
+    assert.equal(addRoomPlayer([tokenlessSeat], 2, 'host', makeSocket()).result, 'session-mismatch');
+    assert.equal(addRoomPlayer([npcSeat], 2, 'npc', makeSocket(), {
+        roomSessionToken: 'npc-token'
+    }).result, 'session-mismatch');
+});
+
 test('detachRoomPlayer ignores stale sockets and replaces current sockets immutably', () => {
     const currentSocket = makeSocket();
     const staleSocket = makeSocket();
@@ -88,7 +98,7 @@ test('detachRoomPlayer ignores stale sockets and replaces current sockets immuta
     assert.equal(seats[0]?.ws, currentSocket);
 });
 
-test('removeRoomPlayer and buildPlayerMetaMap preserve seat input', () => {
+test('removeRoomPlayer ignores stale sockets and buildPlayerMetaMap preserves seat input', () => {
     const seats = [
         { ...makeSeat('host'), lineUserId: 'line-host', avatarUrl: 'https://example.test/host.png' },
         makeSeat('guest')
@@ -107,6 +117,7 @@ test('removeRoomPlayer and buildPlayerMetaMap preserve seat input', () => {
             avatarUrl: undefined
         }
     });
+    assert.deepEqual(removeRoomPlayer(seats, 'guest', makeSocket()), seats);
     assert.deepEqual(removeRoomPlayer(seats, 'guest'), [seats[0]]);
     assert.deepEqual(seats, snapshot);
 });
