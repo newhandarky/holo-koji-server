@@ -5,7 +5,7 @@ import type {
     Player
 } from '@newhandarky/hanakoji-game-types';
 import { DEFAULT_GEISHA_SET } from './geishaSetRules.js';
-import type { ServerGameState } from '../utils/gameUtils.js';
+import type { ServerGameState } from './serverGameStateTypes.js';
 
 export interface VisibleStateOptions {
     geishaSet?: GeishaSet;

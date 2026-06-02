@@ -20,7 +20,7 @@ import {
     validateGinzaSetupData
 } from './geishaSetRules.js';
 import type { BoardSlotDefinition } from './geishaSetRules.js';
-import type { PlayerMetaMap, ServerGameState } from '../utils/gameUtils.js';
+import type { PlayerMeta, PlayerMetaMap, ServerGameState } from './serverGameStateTypes.js';
 
 export interface RandomSource {
     nextInt: (maxExclusive: number) => number;
@@ -38,12 +38,6 @@ interface GeishaCreationOptions {
 
 interface CustomSelectionValidationOptions {
     characterPool?: CharacterProfile[];
-}
-
-export interface PlayerMeta {
-    name?: string;
-    lineUserId?: string;
-    avatarUrl?: string;
 }
 
 interface OpeningDealInputStep {

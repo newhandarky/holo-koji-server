@@ -7,7 +7,7 @@ import {
     createHiddenCards,
     sanitizePendingInteractionForViewer
 } from './playerVisibleState.js';
-import type { ServerGameState } from '../utils/gameUtils.js';
+import type { ServerGameState } from './serverGameStateTypes.js';
 
 const makeCard = (id: string, geishaId = 1): ItemCard => ({
     id,
