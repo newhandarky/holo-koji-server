@@ -19,14 +19,16 @@ import {
 } from './accountHandlers.js';
 import {
     handleConfirmOrder,
-    handleCreateRoom,
     handleGameAction,
-    handleJoinRoom,
-    handleLeaveRoom,
     handleReadyConfirm,
-    handleRematchRequest,
-    type WebSocketRoomLike
+    handleRematchRequest
 } from './messageHandlers.js';
+import {
+    handleCreateRoom,
+    handleJoinRoom,
+    handleLeaveRoom
+} from './roomLifecycleHandlers.js';
+import type { WebSocketRoomLike } from './roomHandlerTypes.js';
 
 export interface WebSocketRouterDependencies<TRoom extends WebSocketRoomLike> {
     rooms: Map<string, TRoom>;
