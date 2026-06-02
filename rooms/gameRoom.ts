@@ -58,6 +58,10 @@ import {
     type OrderDecisionState
 } from '../game/openingFlow.js';
 import {
+    buildReadyCheckState,
+    buildRematchConfirmationUpdate
+} from '../game/matchConfirmationFlow.js';
+import {
     getActionAvailabilityError,
     getPendingInteractionError,
     toCompetitionGroups,
@@ -100,8 +104,11 @@ import {
     sendRoomMessage,
     type WireMessage
 } from './roomMessaging.js';
-
-type TimerHandle = ReturnType<typeof setTimeout>;
+import {
+    roomScheduler,
+    type RoomScheduler,
+    type TimerHandle
+} from './roomScheduler.js';
 
 type RoundPreparationOptions = {
     orderedPlayerIds?: string[] | null;
@@ -138,8 +145,9 @@ export class GameRoom implements RestorableRoomLike {
     readyConfirmations: Set<string>;
     matchCompletionCounter: number;
     currentCompletionId: string | null;
+    scheduler: RoomScheduler;
 
-    constructor(roomId: string) {
+    constructor(roomId: string, scheduler: RoomScheduler = roomScheduler) {
         // 房間 ID
         this.roomId = roomId;
         // 房間建立時間
@@ -177,6 +185,7 @@ export class GameRoom implements RestorableRoomLike {
         this.readyConfirmations = new Set();
         this.matchCompletionCounter = 0;
         this.currentCompletionId = null;
+        this.scheduler = scheduler;
     }
 
     // 產出可儲存的房間快照（不含連線物件）
@@ -274,19 +283,21 @@ export class GameRoom implements RestorableRoomLike {
             return;
         }
 
-        this.rematchConfirmations.add(playerId);
+        const update = buildRematchConfirmationUpdate(
+            this.players.map(player => player.playerId),
+            this.rematchConfirmations,
+            playerId,
+            this.npcId
+        );
+        this.rematchConfirmations = new Set(update.confirmations);
 
-        if (this.npcId) {
-            this.rematchConfirmations.add(this.npcId);
-        }
-
-        if (this.rematchConfirmations.size >= 2) {
+        if (update.shouldStartRematch) {
             this.startRematch();
         } else {
             this.broadcast({
                 type: 'REMATCH_REQUESTED',
                 payload: {
-                    confirmations: Array.from(this.rematchConfirmations)
+                    confirmations: update.confirmations
                 }
             });
         }
@@ -299,19 +310,20 @@ export class GameRoom implements RestorableRoomLike {
         }
 
         const playerIds = this.players.map(player => player.playerId);
-        this.readyConfirmations.clear();
+        const readyState = buildReadyCheckState(playerIds);
+        this.readyConfirmations = new Set(readyState.confirmations);
 
         this.broadcast({
             type: 'READY_CHECK',
             payload: {
-                confirmations: [],
-                waitingFor: playerIds
+                confirmations: readyState.confirmations,
+                waitingFor: readyState.waitingFor
             }
         });
 
         if (this.npcId) {
             const delay = getNpcThinkingDelay(this.npcDifficulty);
-            setTimeout(() => {
+            this.scheduler.setTimeout(() => {
                 if (this.npcId) {
                     this.confirmReady(this.npcId);
                 }
@@ -623,7 +635,7 @@ export class GameRoom implements RestorableRoomLike {
         }
 
         // 延遲 2 秒後顯示結果（模擬隨機過程）
-        setTimeout(() => {
+        this.scheduler.setTimeout(() => {
             this.decideOrder();
         }, 2000);
     }
@@ -667,7 +679,7 @@ export class GameRoom implements RestorableRoomLike {
         // 若有 NPC，順序決定後自動確認
         if (this.npcId) {
             const delay = getNpcThinkingDelay(this.npcDifficulty);
-            setTimeout(() => {
+            this.scheduler.setTimeout(() => {
                 if (this.npcId) {
                     this.confirmOrder(this.npcId);
                 }
@@ -730,7 +742,7 @@ export class GameRoom implements RestorableRoomLike {
 
         // 如果所有玩家都確認了，開始遊戲
         if (update.confirmations.length === 2) {
-            setTimeout(() => {
+            this.scheduler.setTimeout(() => {
                 this.startReadyCheck();
             }, 800);
         }

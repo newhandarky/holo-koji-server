@@ -9,6 +9,10 @@ import {
     createDisconnectedSocket,
     type RoomSocketLike
 } from '../utils/roomSession.js';
+import type {
+    RoomScheduler,
+    TimerHandle
+} from './roomScheduler.js';
 
 type CapturedMessage = {
     type: string;
@@ -25,6 +29,23 @@ const createCapturingSocket = (): { ws: RoomSocketLike; messages: CapturedMessag
             }
         },
         messages
+    };
+};
+
+const createFakeScheduler = (): {
+    scheduler: RoomScheduler;
+    scheduled: Array<{ callback: () => void; delayMs: number }>;
+} => {
+    const scheduled: Array<{ callback: () => void; delayMs: number }> = [];
+    return {
+        scheduler: {
+            setTimeout: (callback, delayMs) => {
+                scheduled.push({ callback, delayMs });
+                return scheduled.length as unknown as TimerHandle;
+            },
+            clearTimeout: () => {}
+        },
+        scheduled
     };
 };
 
@@ -136,4 +157,48 @@ test('GameRoom starts game before sending masked deal animation cards', () => {
     assert.equal(guestDraw.playerId, 'host');
     assert.equal(guestDraw.card?.type, 'hidden');
     assert.equal(guestDraw.card?.id, 'hidden-draw-host-0');
+});
+
+test('GameRoom preserves rematch and ready check payloads', () => {
+    const host = createCapturingSocket();
+    const guest = createCapturingSocket();
+    const room = new GameRoom('room-confirmations');
+    room.players = [
+        { playerId: 'host', ws: host.ws },
+        { playerId: 'guest', ws: guest.ws }
+    ];
+    room.gameState = { phase: 'deciding_order' } as NonNullable<typeof room.gameState>;
+
+    room.requestRematch('host');
+    room.startReadyCheck();
+
+    assert.deepEqual(host.messages[0], {
+        type: 'REMATCH_REQUESTED',
+        payload: { confirmations: ['host'] }
+    });
+    assert.deepEqual(host.messages[1], {
+        type: 'READY_CHECK',
+        payload: {
+            confirmations: [],
+            waitingFor: ['host', 'guest']
+        }
+    });
+});
+
+test('GameRoom schedules order decision and ready check with existing delays', () => {
+    const { scheduler, scheduled } = createFakeScheduler();
+    const room = new GameRoom('room-scheduler', scheduler);
+    room.players = [
+        { playerId: 'host', ws: createDisconnectedSocket() },
+        { playerId: 'guest', ws: createDisconnectedSocket() }
+    ];
+    assert.equal(room.regenerateBaseGeishas(), true);
+
+    room.startOrderDecision();
+    assert.equal(scheduled[0]?.delayMs, 2000);
+
+    scheduled[0]?.callback();
+    room.confirmOrder('host');
+    room.confirmOrder('guest');
+    assert.equal(scheduled[1]?.delayMs, 800);
 });
