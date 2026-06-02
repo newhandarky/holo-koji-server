@@ -6,8 +6,14 @@ import {
     buildNpcSeat,
     buildNpcTurnAction,
     canScheduleNpcResponse,
-    canScheduleNpcTurn
+    canScheduleNpcTurn,
+    clearRoomNpcTimers,
+    performRoomNpcAction,
+    performRoomNpcResponse,
+    scheduleRoomNpcResponse,
+    scheduleRoomNpcTurn
 } from './roomNpcRuntime.js';
+import type { TimerHandle } from './roomScheduler.js';
 
 const makeState = (): ServerGameState => ({
     players: [
@@ -115,4 +121,107 @@ test('buildNpcTurnAction delegates to the existing npc strategy without mutating
     });
     assert.equal(gameState.players[1]?.hand[0]?.id, 'secret');
     assert.equal(gameState.players[1]?.actionTokens[0]?.used, false);
+});
+
+test('clearRoomNpcTimers clears action and response timers', () => {
+    const cleared: TimerHandle[] = [];
+    const room = {
+        npcActionTimer: 1 as unknown as TimerHandle,
+        npcResponseTimer: 2 as unknown as TimerHandle,
+        scheduler: {
+            setTimeout: (() => 0) as never,
+            clearTimeout: (timer: TimerHandle) => {
+                cleared.push(timer);
+            }
+        }
+    };
+
+    clearRoomNpcTimers(room);
+
+    assert.deepEqual(cleared, [1 as unknown as TimerHandle, 2 as unknown as TimerHandle]);
+    assert.equal(room.npcActionTimer, null);
+    assert.equal(room.npcResponseTimer, null);
+});
+
+test('scheduleRoomNpcTurn and scheduleRoomNpcResponse replace stale timers with existing delays', () => {
+    const scheduled: Array<{ callback: () => void; delayMs: number }> = [];
+    const cleared: TimerHandle[] = [];
+    const room = {
+        roomId: 'npc-runtime',
+        npcId: 'NPC',
+        npcDifficulty: 'hard' as const,
+        npcActionTimer: 1 as unknown as TimerHandle,
+        npcResponseTimer: 2 as unknown as TimerHandle,
+        gameState: makeState(),
+        scheduler: {
+            setTimeout: (callback: () => void, delayMs: number) => {
+                scheduled.push({ callback, delayMs });
+                return scheduled.length as unknown as TimerHandle;
+            },
+            clearTimeout: (timer: TimerHandle) => {
+                cleared.push(timer);
+            }
+        },
+        performNpcAction: () => {},
+        performNpcResponse: () => {}
+    };
+
+    scheduleRoomNpcTurn(room);
+    room.gameState.pendingInteraction = {
+        type: 'GIFT_SELECTION',
+        initiatorId: 'host',
+        targetPlayerId: 'NPC',
+        offeredCards: []
+    };
+    scheduleRoomNpcResponse(room);
+
+    assert.deepEqual(cleared, [1 as unknown as TimerHandle, 2 as unknown as TimerHandle]);
+    assert.equal(scheduled[0]?.delayMs, 700);
+    assert.equal(scheduled[1]?.delayMs, 700);
+    assert.equal(room.npcActionTimer, 1 as unknown as TimerHandle);
+    assert.equal(room.npcResponseTimer, 2 as unknown as TimerHandle);
+});
+
+test('performRoomNpcAction ends turn when no npc action can be built', () => {
+    let ended = 0;
+    let handled = 0;
+    const room = {
+        gameState: makeState(),
+        npcId: 'NPC',
+        npcDifficulty: 'easy' as const,
+        endTurn: () => {
+            ended += 1;
+        },
+        handleAction: () => {
+            handled += 1;
+        }
+    };
+
+    performRoomNpcAction(room);
+
+    assert.equal(ended, 1);
+    assert.equal(handled, 0);
+});
+
+test('performRoomNpcResponse dispatches built npc response actions', () => {
+    const handled: Array<{ playerId: string; type: string }> = [];
+    const gameState = makeState();
+    gameState.pendingInteraction = {
+        type: 'GIFT_SELECTION',
+        initiatorId: 'host',
+        targetPlayerId: 'NPC',
+        offeredCards: [{ id: 'gift', geishaId: 1, type: 'item' }]
+    };
+    const room = {
+        gameState,
+        npcId: 'NPC',
+        npcDifficulty: 'easy' as const,
+        handleAction: (playerId: string, action: { type: string }) => {
+            handled.push({ playerId, type: action.type });
+        }
+    };
+
+    performRoomNpcResponse(room);
+
+    assert.deepEqual(handled, [{ playerId: 'NPC', type: 'RESOLVE_GIFT' }]);
 });
