@@ -34,10 +34,6 @@ import {
     type RoomSnapshot
 } from './roomSnapshot.js';
 import {
-    addRoomPlayer,
-    buildPlayerMetaMap,
-    detachRoomPlayer,
-    removeRoomPlayer,
     type PlayerMetaPayload
 } from './roomMembership.js';
 import {
@@ -100,6 +96,13 @@ import {
     validateRoomRoundSetup,
     type RoundPreparationOptions
 } from './roomRoundSetupRuntime.js';
+import {
+    addRoomSeat,
+    detachRoomSeatConnection,
+    getRoomPlayerMetaMap,
+    isRoomFull,
+    removeRoomSeat
+} from './roomSeatRuntime.js';
 
 type GameRoomPlayer = RoomSeat & {
     sessionToken?: string;
@@ -208,7 +211,7 @@ export class GameRoom implements RestorableRoomLike {
     }
 
     getPlayerMetaMap(): PlayerMetaMap {
-        return buildPlayerMetaMap(this.players);
+        return getRoomPlayerMetaMap(this);
     }
 
     // 清除 NPC 計時器（避免重複執行）
@@ -291,77 +294,16 @@ export class GameRoom implements RestorableRoomLike {
 
     // 加入玩家到房間，並回傳加入結果
     addPlayer(playerId: string, ws: RoomSocketLike, meta: PlayerMetaPayload = {}) {
-        const update = addRoomPlayer(this.players, this.maxPlayers, playerId, ws, meta);
-        if (update.result === 'invalid') {
-            backendLogger.warn('⚠️ 嘗試加入房間但 playerId 為空', {
-                roomId: this.roomId
-            });
-            return 'invalid';
-        }
-
-        if (update.result === 'session-mismatch') {
-            backendLogger.warn(`⚠️ 玩家 ${playerId} 嘗試以不符 session token 重新加入房間 ${this.roomId}`, {
-                roomId: this.roomId,
-                playerId
-            });
-            return 'session-mismatch';
-        }
-
-        if (update.result === 'existing') {
-            this.players = update.seats;
-            backendLogger.info(`♻️ 玩家 ${playerId} 重新連線房間 ${this.roomId}`, {
-                roomId: this.roomId,
-                playerId
-            });
-            this.persistRoomSnapshot();
-            return 'existing';
-        }
-
-        if (update.result === 'full') {
-            return 'full';
-        }
-
-        this.players = update.seats;
-        backendLogger.info(`✅ 玩家 ${playerId} 加入房間 ${this.roomId}`, {
-            roomId: this.roomId,
-            playerId,
-            playerCount: this.players.length
-        });
-        this.persistRoomSnapshot();
-        return 'added';
+        return addRoomSeat(this, playerId, ws, meta);
     }
 
     // 從房間移除玩家
     removePlayer(playerId: string, ws: RoomSocketLike | null = null): boolean {
-        const nextPlayers = removeRoomPlayer(this.players, playerId, ws);
-        if (nextPlayers.length === this.players.length) {
-            return false;
-        }
-
-        this.players = nextPlayers;
-        backendLogger.info(`❌ 玩家 ${playerId} 離開房間 ${this.roomId}`, {
-            roomId: this.roomId,
-            playerId,
-            playerCount: this.players.length
-        });
-        this.persistRoomSnapshot();
-        return true;
+        return removeRoomSeat(this, playerId, ws);
     }
 
     detachPlayerConnection(playerId: string, ws: RoomSocketLike | null = null) {
-        const update = detachRoomPlayer(this.players, playerId, ws);
-        if (!update.detached) {
-            return false;
-        }
-
-        this.players = update.seats;
-        backendLogger.info(`🔌 玩家 ${playerId} 已斷線但保留房間座位`, {
-            roomId: this.roomId,
-            playerId,
-            phase: this.gameState?.phase
-        });
-        this.persistRoomSnapshot();
-        return true;
+        return detachRoomSeatConnection(this, playerId, ws);
     }
 
     // 廣播訊息給房間內所有玩家（非狀態同步使用）
@@ -371,7 +313,7 @@ export class GameRoom implements RestorableRoomLike {
 
     // 檢查房間是否已滿員
     isFull(): boolean {
-        return this.players.length === this.maxPlayers;
+        return isRoomFull(this);
     }
 
     // 準備新回合的初始狀態（洗牌、移除卡、發牌）
