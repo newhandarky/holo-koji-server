@@ -8,10 +8,12 @@ import type {
 } from '@newhandarky/hanakoji-game-types';
 import {
     DEFAULT_GEISHA_SET,
-    DEFAULT_ROOM_SETUP_MODE,
-    type PlayerMetaMap,
-    type ServerGameState
-} from '../utils/gameUtils.js';
+    DEFAULT_ROOM_SETUP_MODE
+} from '../game/geishaSetRules.js';
+import type {
+    PlayerMetaMap,
+    ServerGameState
+} from '../game/serverGameStateTypes.js';
 import { backendLogger } from '../utils/runtimeLogger.js';
 import {
     type RoomSeat,

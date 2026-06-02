@@ -1,7 +1,7 @@
 // src/models/GameManager.ts
 import { GameState, GameAction, Player } from "@newhandarky/hanakoji-game-types";
 import { gameReducer, initialState } from '../reducers/gameReducer';
-import { createRandomizedGeishas } from '../utils/gameUtils';
+import { createRandomizedGeishas } from '../game/gameStateFactory';
 import { backendLogger } from '../utils/runtimeLogger.js';
 
 class GameManager {

@@ -11,7 +11,7 @@ import {
     pickNpcGiftCardResponse
 } from '../npc/npcStrategy.js';
 import type { ServerAction } from '../game/actionValidation.js';
-import type { ServerGameState } from '../utils/gameUtils.js';
+import type { ServerGameState } from '../game/serverGameStateTypes.js';
 import {
     createNpcSocket,
     type RoomSeat

@@ -1,10 +1,12 @@
 import type { Geisha, GeishaSet } from '@newhandarky/hanakoji-game-types';
 import {
     cloneGeishas,
-    createWaitingGameState,
-    type PlayerMetaMap,
-    type ServerGameState
-} from '../utils/gameUtils.js';
+    createWaitingGameState
+} from './gameStateFactory.js';
+import type {
+    PlayerMetaMap,
+    ServerGameState
+} from './serverGameStateTypes.js';
 
 export type OrderDecisionResult = {
     firstPlayer: string;

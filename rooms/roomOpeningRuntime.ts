@@ -20,7 +20,7 @@ import { backendLogger } from '../utils/runtimeLogger.js';
 import type {
     PlayerMetaMap,
     ServerGameState
-} from '../utils/gameUtils.js';
+} from '../game/serverGameStateTypes.js';
 import type { RoomScheduler } from './roomScheduler.js';
 import type { RoomSeat } from '../utils/roomSession.js';
 import type { WireMessage } from './roomMessaging.js';

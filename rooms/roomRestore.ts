@@ -8,9 +8,9 @@ import {
     DEFAULT_GEISHA_SET,
     normalizeRoomSetupMode,
     resolveRestorableBoardForSet,
-    resolveRestorableGeishaSet,
-    type ServerGameState
-} from '../utils/gameUtils.js';
+    resolveRestorableGeishaSet
+} from '../game/geishaSetRules.js';
+import type { ServerGameState } from '../game/serverGameStateTypes.js';
 import {
     buildRestoredRoomSeats,
     createNpcSocket,

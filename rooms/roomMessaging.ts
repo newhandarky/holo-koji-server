@@ -7,9 +7,7 @@ import {
     buildPlayerVisibleGameState,
     sanitizePendingInteractionForViewer
 } from '../game/playerVisibleState.js';
-import {
-    type ServerGameState
-} from '../utils/gameUtils.js';
+import type { ServerGameState } from '../game/serverGameStateTypes.js';
 import {
     backendLogger,
     summarizeWebSocketMessage

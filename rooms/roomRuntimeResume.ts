@@ -1,4 +1,4 @@
-import type { ServerGameState } from '../utils/gameUtils.js';
+import type { ServerGameState } from '../game/serverGameStateTypes.js';
 import {
     createOrderDecisionState,
     type OrderDecisionState
