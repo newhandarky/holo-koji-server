@@ -6,7 +6,9 @@ import {
     type NpcDifficulty
 } from '../npc/npcConfig.js';
 import {
-    buildNpcActionChoice,
+    buildNpcActionChoice
+} from '../npc/npcActionPlanner.js';
+import {
     pickNpcCompetitionGroupResponse,
     pickNpcGiftCardResponse
 } from '../npc/npcStrategy.js';
