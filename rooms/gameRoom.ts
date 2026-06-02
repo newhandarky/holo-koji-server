@@ -37,11 +37,6 @@ import {
     type PlayerMetaPayload
 } from './roomMembership.js';
 import {
-    broadcastRoomMessage,
-    buildMaskedDealSequence,
-    buildPendingInteractionMessages,
-    buildViewerGameState,
-    sendRoomMessage,
     type WireMessage
 } from './roomMessaging.js';
 import {
@@ -103,6 +98,16 @@ import {
     isRoomFull,
     removeRoomSeat
 } from './roomSeatRuntime.js';
+import {
+    broadcastRoomClientMessage,
+    broadcastRoomGameState,
+    broadcastRoomGameStateEvent,
+    buildRoomClientGameState,
+    buildRoomDealSequenceForPlayer,
+    sendRoomClientError,
+    sendRoomClientMessage,
+    sendRoomPendingInteractionState
+} from './roomClientEventRuntime.js';
 
 type GameRoomPlayer = RoomSeat & {
     sessionToken?: string;
@@ -249,47 +254,26 @@ export class GameRoom implements RestorableRoomLike {
 
     // 將訊息傳送給指定玩家（避免廣播時洩漏資訊）
     sendToPlayer(playerId: string, message: WireMessage): void {
-        sendRoomMessage(this.roomId, this.players, playerId, message);
+        sendRoomClientMessage(this, playerId, message);
     }
 
     // 傳送錯誤訊息給指定玩家（統一錯誤回傳格式）
     sendError(playerId: string, message: string, code?: string): void {
-        this.sendToPlayer(playerId, {
-            type: 'ERROR',
-            payload: {
-                message,
-                ...(code ? { code } : {})
-            }
-        });
+        sendRoomClientError(this, playerId, message, code);
     }
 
     sendPendingInteractionState(): void {
-        const pendingInteraction = this.gameState?.pendingInteraction;
-        if (!pendingInteraction) {
-            return;
-        }
-
-        buildPendingInteractionMessages(this.players, pendingInteraction).forEach(({ playerId, message }) => {
-            this.sendToPlayer(playerId, message);
-        });
+        sendRoomPendingInteractionState(this);
     }
 
     // 將遊戲狀態整理成玩家可見版本（隱藏對手手牌與密約資訊）
     buildClientGameState(viewerId: string): ServerGameState | null {
-        if (!this.gameState) {
-            return null;
-        }
-
-        const visibleState = buildViewerGameState(this.gameState, viewerId, this.geishaSet ?? DEFAULT_GEISHA_SET);
-        if (visibleState?.geishaSet && !this.gameState.geishaSet) {
-            this.gameState.geishaSet = visibleState.geishaSet;
-        }
-        return visibleState;
+        return buildRoomClientGameState(this, viewerId);
     }
 
     // 依玩家視角建立發牌動畫序列（開局動畫一律只顯示背面）
     buildDealSequenceForPlayer(playerId: string) {
-        return buildMaskedDealSequence(this.dealSequence, playerId);
+        return buildRoomDealSequenceForPlayer(this, playerId);
     }
 
     // 加入玩家到房間，並回傳加入結果
@@ -308,7 +292,7 @@ export class GameRoom implements RestorableRoomLike {
 
     // 廣播訊息給房間內所有玩家（非狀態同步使用）
     broadcast(message: WireMessage, excludePlayerId: string | null = null): void {
-        broadcastRoomMessage(this.roomId, this.players, message, excludePlayerId);
+        broadcastRoomClientMessage(this, message, excludePlayerId);
     }
 
     // 檢查房間是否已滿員
@@ -348,26 +332,12 @@ export class GameRoom implements RestorableRoomLike {
 
     // 傳送指定事件與可見遊戲狀態（避免資料外洩）
     broadcastGameStateEvent(eventType: string): void {
-        if (!this.gameState) {
-            return;
-        }
-
-        this.players.forEach((player) => {
-            const payload = this.buildClientGameState(player.playerId);
-            if (payload) {
-                this.sendToPlayer(player.playerId, {
-                    type: eventType,
-                    payload
-                });
-            }
-        });
-
-        this.persistRoomSnapshot();
+        broadcastRoomGameStateEvent(this, eventType);
     }
 
     // 廣播可見狀態（標準狀態同步事件）
     broadcastGameState(): void {
-        this.broadcastGameStateEvent('GAME_STATE_UPDATED');
+        broadcastRoomGameState(this);
     }
 
     // 取得玩家的遊戲狀態資料
