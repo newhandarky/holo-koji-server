@@ -5,7 +5,9 @@ import type {
 } from '@newhandarky/hanakoji-game-types';
 import {
     buildPlayerVisibleGameState,
-    sanitizePendingInteractionForViewer,
+    sanitizePendingInteractionForViewer
+} from '../game/playerVisibleState.js';
+import {
     type ServerGameState
 } from '../utils/gameUtils.js';
 import {
