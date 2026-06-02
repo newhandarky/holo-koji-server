@@ -67,17 +67,18 @@ import {
     type WireMessage
 } from './roomMessaging.js';
 import {
-    replaceScheduledTimer,
     roomScheduler,
     type RoomScheduler,
     type TimerHandle
 } from './roomScheduler.js';
 import {
-    buildNpcResponseAction,
+    buildRoomNpcAction,
     buildNpcSeat,
-    buildNpcTurnAction,
-    canScheduleNpcResponse,
-    canScheduleNpcTurn
+    clearRoomNpcTimers,
+    performRoomNpcAction,
+    performRoomNpcResponse,
+    scheduleRoomNpcResponse,
+    scheduleRoomNpcTurn
 } from './roomNpcRuntime.js';
 import {
     handleRoomAction,
@@ -223,14 +224,7 @@ export class GameRoom implements RestorableRoomLike {
 
     // 清除 NPC 計時器（避免重複執行）
     clearNpcTimers(): void {
-        if (this.npcActionTimer) {
-            this.scheduler.clearTimeout(this.npcActionTimer);
-            this.npcActionTimer = null;
-        }
-        if (this.npcResponseTimer) {
-            this.scheduler.clearTimeout(this.npcResponseTimer);
-            this.npcResponseTimer = null;
-        }
+        clearRoomNpcTimers(this);
     }
 
     regenerateBaseGeishas(): boolean {
@@ -639,28 +633,12 @@ export class GameRoom implements RestorableRoomLike {
 
     // 安排 NPC 行動
     scheduleNpcTurn(): void {
-        if (!canScheduleNpcTurn(this.gameState, this.npcId)) {
-            return;
-        }
-
-        const delay = getNpcThinkingDelay(this.npcDifficulty);
-        this.npcActionTimer = replaceScheduledTimer(this.scheduler, this.npcActionTimer, () => {
-            this.npcActionTimer = null;
-            this.performNpcAction();
-        }, delay);
+        scheduleRoomNpcTurn(this);
     }
 
     // 安排 NPC 回應互動（贈予/競爭）
     scheduleNpcResponse(): void {
-        if (!canScheduleNpcResponse(this.gameState?.pendingInteraction, this.npcId)) {
-            return;
-        }
-
-        const delay = getNpcThinkingDelay(this.npcDifficulty);
-        this.npcResponseTimer = replaceScheduledTimer(this.scheduler, this.npcResponseTimer, () => {
-            this.npcResponseTimer = null;
-            this.performNpcResponse();
-        }, delay);
+        scheduleRoomNpcResponse(this);
     }
 
     scheduleNextRound(): void {
@@ -673,30 +651,17 @@ export class GameRoom implements RestorableRoomLike {
 
     // NPC 執行回合行動
     performNpcAction(): void {
-        const npcId = this.npcId;
-        if (!canScheduleNpcTurn(this.gameState, npcId) || !npcId) {
-            return;
-        }
-        const action = buildNpcTurnAction(this.gameState, npcId, this.npcDifficulty);
-        if (!action) {
-            this.endTurn();
-            return;
-        }
-
-        this.handleAction(npcId, action);
+        performRoomNpcAction(this);
     }
 
     // NPC 回應互動（贈予/競爭）
     performNpcResponse(): void {
-        const action = buildNpcResponseAction(this.gameState, this.npcId, this.npcDifficulty);
-        if (action && this.npcId) {
-            this.handleAction(this.npcId, action);
-        }
+        performRoomNpcResponse(this);
     }
 
     // NPC 決定要執行的行動與卡片
     buildNpcAction(player: GamePlayer): ServerAction | null {
-        return buildNpcTurnAction(this.gameState, player.id, this.npcDifficulty);
+        return buildRoomNpcAction(this, player);
     }
 
     // 結束回合並切換到下一位可行動玩家

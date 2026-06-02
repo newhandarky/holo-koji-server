@@ -1,6 +1,7 @@
 import type { PendingInteraction } from '@newhandarky/hanakoji-game-types';
 import {
     getNpcDifficultyLabel,
+    getNpcThinkingDelay,
     normalizeNpcDifficulty,
     type NpcDifficulty
 } from '../npc/npcConfig.js';
@@ -15,11 +16,29 @@ import {
     createNpcSocket,
     type RoomSeat
 } from '../utils/roomSession.js';
+import {
+    replaceScheduledTimer,
+    type RoomScheduler,
+    type TimerHandle
+} from './roomScheduler.js';
 
 export type NpcSeatUpdate = {
     npcId: string;
     difficulty: NpcDifficulty;
     seat: RoomSeat;
+};
+
+export type RoomNpcRuntime = {
+    gameState: ServerGameState | null;
+    npcId: string | null;
+    npcDifficulty: NpcDifficulty | null;
+    npcActionTimer: TimerHandle | null;
+    npcResponseTimer: TimerHandle | null;
+    scheduler: RoomScheduler;
+    performNpcAction: () => void;
+    performNpcResponse: () => void;
+    endTurn: () => void;
+    handleAction: (playerId: string, action: ServerAction) => void;
 };
 
 export const buildNpcSeat = (difficulty: unknown = 'easy'): NpcSeatUpdate => {
@@ -114,3 +133,74 @@ export const buildNpcResponseAction = (
 
     return null;
 };
+
+export const clearRoomNpcTimers = (
+    room: Pick<RoomNpcRuntime, 'npcActionTimer' | 'npcResponseTimer' | 'scheduler'>
+): void => {
+    if (room.npcActionTimer) {
+        room.scheduler.clearTimeout(room.npcActionTimer);
+        room.npcActionTimer = null;
+    }
+    if (room.npcResponseTimer) {
+        room.scheduler.clearTimeout(room.npcResponseTimer);
+        room.npcResponseTimer = null;
+    }
+};
+
+export const scheduleRoomNpcTurn = (
+    room: Pick<RoomNpcRuntime, 'gameState' | 'npcId' | 'npcDifficulty' | 'npcActionTimer' | 'scheduler' | 'performNpcAction'>
+): void => {
+    if (!canScheduleNpcTurn(room.gameState, room.npcId)) {
+        return;
+    }
+
+    const delay = getNpcThinkingDelay(room.npcDifficulty);
+    room.npcActionTimer = replaceScheduledTimer(room.scheduler, room.npcActionTimer, () => {
+        room.npcActionTimer = null;
+        room.performNpcAction();
+    }, delay);
+};
+
+export const scheduleRoomNpcResponse = (
+    room: Pick<RoomNpcRuntime, 'gameState' | 'npcId' | 'npcDifficulty' | 'npcResponseTimer' | 'scheduler' | 'performNpcResponse'>
+): void => {
+    if (!canScheduleNpcResponse(room.gameState?.pendingInteraction, room.npcId)) {
+        return;
+    }
+
+    const delay = getNpcThinkingDelay(room.npcDifficulty);
+    room.npcResponseTimer = replaceScheduledTimer(room.scheduler, room.npcResponseTimer, () => {
+        room.npcResponseTimer = null;
+        room.performNpcResponse();
+    }, delay);
+};
+
+export const performRoomNpcAction = (
+    room: Pick<RoomNpcRuntime, 'gameState' | 'npcId' | 'npcDifficulty' | 'endTurn' | 'handleAction'>
+): void => {
+    const npcId = room.npcId;
+    if (!canScheduleNpcTurn(room.gameState, npcId) || !npcId) {
+        return;
+    }
+    const action = buildNpcTurnAction(room.gameState, npcId, room.npcDifficulty);
+    if (!action) {
+        room.endTurn();
+        return;
+    }
+
+    room.handleAction(npcId, action);
+};
+
+export const performRoomNpcResponse = (
+    room: Pick<RoomNpcRuntime, 'gameState' | 'npcId' | 'npcDifficulty' | 'handleAction'>
+): void => {
+    const action = buildNpcResponseAction(room.gameState, room.npcId, room.npcDifficulty);
+    if (action && room.npcId) {
+        room.handleAction(room.npcId, action);
+    }
+};
+
+export const buildRoomNpcAction = (
+    room: Pick<RoomNpcRuntime, 'gameState' | 'npcDifficulty'>,
+    player: { id: string }
+): ServerAction | null => buildNpcTurnAction(room.gameState, player.id, room.npcDifficulty);
