@@ -1,4 +1,3 @@
-import { createClient } from 'redis';
 import type {
     AccountPersistenceStatus,
     AchievementCatalogItem,
@@ -8,7 +7,10 @@ import type {
     AchievementStatusResult,
     AchievementSummaryItem
 } from '@newhandarky/hanakoji-game-types';
-import { backendLogger } from './runtimeLogger.js';
+import {
+    createJsonPersistenceAdapter,
+    type KeyValueClient
+} from './persistenceAdapter.js';
 
 const REDIS_URL = process.env.REDIS_URL;
 const ACHIEVEMENT_UNAVAILABLE_MESSAGE = '成就暫時不可用，進度目前無法保存。';
@@ -16,14 +18,6 @@ const ACHIEVEMENT_GUEST_MESSAGE = '成就需要綁定帳號後才會保存。';
 const ACHIEVEMENT_PROGRESS_KEY_PREFIX = 'hanamikoji:achievement:progress:';
 const ACHIEVEMENT_UNLOCK_KEY_PREFIX = 'hanamikoji:achievement:unlock:';
 const ACHIEVEMENT_COMPLETION_KEY_PREFIX = 'hanamikoji:achievement:completion:';
-
-interface KeyValueClient {
-    isOpen?: boolean;
-    connect?: () => Promise<unknown>;
-    get: (key: string) => Promise<string | null>;
-    set: (key: string, value: string) => Promise<unknown>;
-    on?: (event: 'error', listener: (error: unknown) => void) => unknown;
-}
 
 interface AchievementProgressRecord {
     lineUserId: string;
@@ -124,57 +118,23 @@ export const createAchievementStore = ({
     redisClient = null,
     getPersistenceStatus = () => temporaryPersistenceStatus
 }: AchievementStoreOptions = {}): AchievementStore => {
-    const progressRecords = new Map<string, AchievementProgressRecord>();
-    const unlockRecords = new Map<string, AchievementUnlockRecord>();
-    const processedCompletions = new Map<string, ProcessedCompletionRecord>();
-    let client = redisClient;
-    let storageFailure: unknown = null;
+    const persistence = createJsonPersistenceAdapter({
+        redisUrl,
+        redisClient,
+        logLabel: 'Achievement',
+        durableMessage: 'Account profiles are persistent.',
+        temporaryMessage: 'Account profiles are temporary in this environment.',
+        unavailableMessage: 'Account profiles are unavailable; durable persistence is not connected.'
+    });
 
     const buildProgressKey = (lineUserId: string, achievementId: AchievementId) => `${lineUserId}:${achievementId}`;
     const buildRedisProgressKey = (lineUserId: string, achievementId: AchievementId) => `${ACHIEVEMENT_PROGRESS_KEY_PREFIX}${buildProgressKey(lineUserId, achievementId)}`;
     const buildRedisUnlockKey = (lineUserId: string, achievementId: AchievementId) => `${ACHIEVEMENT_UNLOCK_KEY_PREFIX}${buildProgressKey(lineUserId, achievementId)}`;
     const buildRedisCompletionKey = (completionId: string) => `${ACHIEVEMENT_COMPLETION_KEY_PREFIX}${completionId}`;
 
-    const getClient = async (): Promise<KeyValueClient | null> => {
-        if (client) {
-            if (client.isOpen === false && typeof client.connect === 'function') {
-                try {
-                    await client.connect();
-                } catch (error) {
-                    storageFailure = error;
-                    throw error;
-                }
-            }
-            return client;
-        }
-        if (!redisUrl) {
-            return null;
-        }
-
-        const nextClient = createClient({ url: redisUrl }) as unknown as KeyValueClient;
-        nextClient.on?.('error', (error) => {
-            backendLogger.error('❌ Achievement Redis 連線錯誤', {
-                error: error instanceof Error ? error.message : 'unknown'
-            });
-        });
-
-        if (!nextClient.isOpen) {
-            try {
-                await nextClient.connect?.();
-                backendLogger.info('✅ Achievement Redis 連線成功');
-            } catch (error) {
-                storageFailure = error;
-                client = null;
-                throw error;
-            }
-        }
-        client = nextClient;
-        return client;
-    };
-
     const getDurableStatus = (): { available: boolean; persistenceStatus: AccountPersistenceStatus } => {
         const persistenceStatus = getPersistenceStatus();
-        if (!storageFailure && persistenceStatus.mode === 'durable' && persistenceStatus.available === true) {
+        if (!persistence.getStorageFailure() && persistenceStatus.mode === 'durable' && persistenceStatus.available === true) {
             return { available: true, persistenceStatus };
         }
 
@@ -194,54 +154,24 @@ export const createAchievementStore = ({
     });
 
     const getProgress = async (lineUserId: string, achievementId: AchievementId): Promise<AchievementProgressRecord | undefined> => {
-        const activeClient = await getClient();
-        if (activeClient) {
-            const raw = await activeClient.get(buildRedisProgressKey(lineUserId, achievementId));
-            return raw ? JSON.parse(raw) as AchievementProgressRecord : undefined;
-        }
-        return progressRecords.get(buildProgressKey(lineUserId, achievementId));
+        return await persistence.getJson<AchievementProgressRecord>(buildRedisProgressKey(lineUserId, achievementId)) ?? undefined;
     };
     const setProgress = async (record: AchievementProgressRecord): Promise<void> => {
-        const activeClient = await getClient();
-        if (activeClient) {
-            await activeClient.set(buildRedisProgressKey(record.lineUserId, record.achievementId), JSON.stringify(record));
-            return;
-        }
-        progressRecords.set(buildProgressKey(record.lineUserId, record.achievementId), record);
+        await persistence.setJson(buildRedisProgressKey(record.lineUserId, record.achievementId), record);
     };
 
     const getUnlock = async (lineUserId: string, achievementId: AchievementId): Promise<AchievementUnlockRecord | undefined> => {
-        const activeClient = await getClient();
-        if (activeClient) {
-            const raw = await activeClient.get(buildRedisUnlockKey(lineUserId, achievementId));
-            return raw ? JSON.parse(raw) as AchievementUnlockRecord : undefined;
-        }
-        return unlockRecords.get(buildProgressKey(lineUserId, achievementId));
+        return await persistence.getJson<AchievementUnlockRecord>(buildRedisUnlockKey(lineUserId, achievementId)) ?? undefined;
     };
     const setUnlock = async (record: AchievementUnlockRecord): Promise<void> => {
-        const activeClient = await getClient();
-        if (activeClient) {
-            await activeClient.set(buildRedisUnlockKey(record.lineUserId, record.achievementId), JSON.stringify(record));
-            return;
-        }
-        unlockRecords.set(buildProgressKey(record.lineUserId, record.achievementId), record);
+        await persistence.setJson(buildRedisUnlockKey(record.lineUserId, record.achievementId), record);
     };
 
     const getProcessedCompletion = async (completionId: string): Promise<ProcessedCompletionRecord | undefined> => {
-        const activeClient = await getClient();
-        if (activeClient) {
-            const raw = await activeClient.get(buildRedisCompletionKey(completionId));
-            return raw ? JSON.parse(raw) as ProcessedCompletionRecord : undefined;
-        }
-        return processedCompletions.get(completionId);
+        return await persistence.getJson<ProcessedCompletionRecord>(buildRedisCompletionKey(completionId)) ?? undefined;
     };
     const setProcessedCompletion = async (record: ProcessedCompletionRecord): Promise<void> => {
-        const activeClient = await getClient();
-        if (activeClient) {
-            await activeClient.set(buildRedisCompletionKey(record.completionId), JSON.stringify(record));
-            return;
-        }
-        processedCompletions.set(record.completionId, record);
+        await persistence.setJson(buildRedisCompletionKey(record.completionId), record);
     };
 
     const buildSummary = async (lineUserId: string, persistenceStatus: AccountPersistenceStatus): Promise<AchievementStatusResult> => {
@@ -290,7 +220,6 @@ export const createAchievementStore = ({
         try {
             return await buildSummary(lineUserId, persistenceStatus);
         } catch (error) {
-            storageFailure = error;
             return buildUnavailableSummary(getPersistenceStatus());
         }
     };
@@ -357,7 +286,6 @@ export const createAchievementStore = ({
                 };
             }
         } catch (error) {
-            storageFailure = error;
             return {
                 status: 'unavailable',
                 updates: [],
@@ -390,7 +318,6 @@ export const createAchievementStore = ({
                 completionId
             };
         } catch (error) {
-            storageFailure = error;
             return {
                 status: 'unavailable',
                 updates: [],
@@ -426,7 +353,6 @@ export const createAchievementStore = ({
 
             return await buildSummary(lineUserId, persistenceStatus);
         } catch (error) {
-            storageFailure = error;
             return buildUnavailableSummary(getPersistenceStatus());
         }
     };

@@ -1,4 +1,3 @@
-import { createClient } from 'redis';
 import type {
     AccountPersistenceStatus,
     AccountSyncRequest,
@@ -14,19 +13,15 @@ import {
     type AchievementMatchCompletionResult,
     type AchievementStore
 } from './achievementStore.js';
+import {
+    createJsonPersistenceAdapter,
+    type KeyValueClient
+} from './persistenceAdapter.js';
 
 const REDIS_URL = process.env.REDIS_URL;
 const ACCOUNT_KEY_PREFIX = 'hanamikoji:account:line:';
 const ACCOUNT_COMPLETION_KEY_PREFIX = 'hanamikoji:account:completion:';
 const ACCOUNT_GUEST_NOTICE = '目前以訪客模式繼續，帳號進度暫時不會保存。';
-
-interface KeyValueClient {
-    isOpen?: boolean;
-    connect?: () => Promise<unknown>;
-    get: (key: string) => Promise<string | null>;
-    set: (key: string, value: string) => Promise<unknown>;
-    on?: (event: 'error', listener: (error: unknown) => void) => unknown;
-}
 
 interface AccountStoreOptions {
     redisUrl?: string;
@@ -174,156 +169,39 @@ export const createAccountStore = ({
     now = () => new Date(),
     achievementStore = null
 }: AccountStoreOptions = {}): AccountStore => {
-    const memoryProfiles = new Map<string, LineAccountProfile>();
-    const memoryProcessedCompletions = new Map<string, AccountCompletionRecord>();
-    let client = redisClient;
-    let storageFailure: unknown = null;
-
-    const getPersistenceStatus = (): AccountPersistenceStatus => {
-        if (storageFailure) {
-            return {
-                mode: 'temporary',
-                available: false,
-                message: 'Account profiles are unavailable; durable persistence is not connected.'
-            };
-        }
-
-        if (client?.isOpen === true) {
-            return {
-                mode: 'durable',
-                available: true,
-                message: 'Account profiles are persistent.'
-            };
-        }
-
-        if (redisUrl || client) {
-            return {
-                mode: 'temporary',
-                available: false,
-                message: 'Account profiles are unavailable; durable persistence is not connected.'
-            };
-        }
-
-        return {
-            mode: 'temporary',
-            available: true,
-            message: 'Account profiles are temporary in this environment.'
-        };
-    };
-
-    const getClient = async (): Promise<KeyValueClient | null> => {
-        if (client) {
-            if (client.isOpen === false && typeof client.connect === 'function') {
-                try {
-                    await client.connect();
-                } catch (error) {
-                    storageFailure = error;
-                    throw error;
-                }
-            }
-            return client;
-        }
-        if (!redisUrl) {
-            return null;
-        }
-
-        const nextClient = createClient({ url: redisUrl }) as unknown as KeyValueClient;
-        nextClient.on?.('error', (error) => {
-            backendLogger.error('❌ Account Redis 連線錯誤', {
-                error: error instanceof Error ? error.message : 'unknown'
-            });
-        });
-
-        if (!nextClient.isOpen) {
-            try {
-                await nextClient.connect?.();
-                backendLogger.info('✅ Account Redis 連線成功');
-            } catch (error) {
-                storageFailure = error;
-                client = null;
-                throw error;
-            }
-        }
-        client = nextClient;
-        return client;
-    };
-
-    const checkPersistenceStatus = async (): Promise<AccountPersistenceStatus> => {
-        if ((redisUrl || client) && client?.isOpen !== true && !storageFailure) {
-            try {
-                await getClient();
-            } catch (_error) {
-                // getClient records the failure; callers only need the public status.
-            }
-        }
-
-        return getPersistenceStatus();
-    };
+    const persistence = createJsonPersistenceAdapter({
+        redisUrl,
+        redisClient,
+        logLabel: 'Account',
+        durableMessage: 'Account profiles are persistent.',
+        temporaryMessage: 'Account profiles are temporary in this environment.',
+        unavailableMessage: 'Account profiles are unavailable; durable persistence is not connected.'
+    });
+    const getPersistenceStatus = persistence.getPersistenceStatus;
+    const checkPersistenceStatus = persistence.checkConnection;
 
     const fallbackAchievementStore = createAchievementStore({
         redisUrl,
-        redisClient: client,
+        redisClient,
         now,
         getPersistenceStatus
     });
     const activeAchievementStore = achievementStore ?? fallbackAchievementStore;
 
     const readProfile = async (lineUserId: string): Promise<LineAccountProfile | null> => {
-        const key = buildAccountKey(lineUserId);
-        const activeClient = await getClient();
-        if (activeClient) {
-            try {
-                const raw = await activeClient.get(key);
-                return raw ? JSON.parse(raw) as LineAccountProfile : null;
-            } catch (error) {
-                storageFailure = error;
-                throw error;
-            }
-        }
-        return memoryProfiles.get(lineUserId) ?? null;
+        return persistence.getJson<LineAccountProfile>(buildAccountKey(lineUserId));
     };
 
     const writeProfile = async (profile: LineAccountProfile): Promise<void> => {
-        const key = buildAccountKey(profile.lineUserId);
-        const activeClient = await getClient();
-        if (activeClient) {
-            try {
-                await activeClient.set(key, JSON.stringify(profile));
-            } catch (error) {
-                storageFailure = error;
-                throw error;
-            }
-            return;
-        }
-        memoryProfiles.set(profile.lineUserId, profile);
+        await persistence.setJson(buildAccountKey(profile.lineUserId), profile);
     };
 
     const readProcessedCompletion = async (completionId: string): Promise<AccountCompletionRecord | null> => {
-        const activeClient = await getClient();
-        if (activeClient) {
-            try {
-                const raw = await activeClient.get(buildAccountCompletionKey(completionId));
-                return raw ? JSON.parse(raw) as AccountCompletionRecord : null;
-            } catch (error) {
-                storageFailure = error;
-                throw error;
-            }
-        }
-        return memoryProcessedCompletions.get(completionId) ?? null;
+        return persistence.getJson<AccountCompletionRecord>(buildAccountCompletionKey(completionId));
     };
 
     const writeProcessedCompletion = async (record: AccountCompletionRecord): Promise<void> => {
-        const activeClient = await getClient();
-        if (activeClient) {
-            try {
-                await activeClient.set(buildAccountCompletionKey(record.completionId), JSON.stringify(record));
-            } catch (error) {
-                storageFailure = error;
-                throw error;
-            }
-            return;
-        }
-        memoryProcessedCompletions.set(record.completionId, record);
+        await persistence.setJson(buildAccountCompletionKey(record.completionId), record);
     };
 
     const upsertProfile = async ({ verifiedIdentity, profile }: Pick<AccountSyncRequest, 'verifiedIdentity' | 'profile'>): Promise<AccountSyncResult> => {
