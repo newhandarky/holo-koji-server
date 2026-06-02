@@ -22,24 +22,16 @@ import {
     type RoomSeat,
     type RoomSocketLike
 } from '../utils/roomSession.js';
-import {
-    getNpcThinkingDelay,
-    type NpcDifficulty
-} from '../npc/npcConfig.js';
+import { type NpcDifficulty } from '../npc/npcConfig.js';
 import {
     buildPreparedRoundState,
     inspectRoundSetup,
     type DealSequenceStep
 } from '../game/roundPreparation.js';
 import {
-    buildConfirmationUpdate,
     createOrderDecisionState,
     type OrderDecisionState
 } from '../game/openingFlow.js';
-import {
-    buildReadyCheckState,
-    buildRematchConfirmationUpdate
-} from '../game/matchConfirmationFlow.js';
 import {
     getActionAvailabilityError,
     type ServerAction
@@ -105,6 +97,12 @@ import {
     startRoomOrderDecision
 } from './roomOpeningRuntime.js';
 import { resumeRestoredRoomRuntime } from './roomRuntimeResume.js';
+import {
+    confirmRoomReady,
+    requestRoomRematch,
+    startRoomReadyCheck,
+    startRoomRematch
+} from './roomMatchRuntime.js';
 
 type RoundPreparationOptions = {
     orderedPlayerIds?: string[] | null;
@@ -256,119 +254,22 @@ export class GameRoom implements RestorableRoomLike {
 
     // 送出再來一場請求
     requestRematch(playerId: string): void {
-        if (!this.validatePlayerInRoom(playerId)) {
-            return;
-        }
-
-        const update = buildRematchConfirmationUpdate(
-            this.players.map(player => player.playerId),
-            this.rematchConfirmations,
-            playerId,
-            this.npcId
-        );
-        this.rematchConfirmations = new Set(update.confirmations);
-
-        if (update.shouldStartRematch) {
-            this.startRematch();
-        } else {
-            this.broadcast({
-                type: 'REMATCH_REQUESTED',
-                payload: {
-                    confirmations: update.confirmations
-                }
-            });
-        }
+        requestRoomRematch(this, playerId);
     }
 
     // 開始準備確認流程
     startReadyCheck(): void {
-        if (!this.gameState) {
-            return;
-        }
-
-        const playerIds = this.players.map(player => player.playerId);
-        const readyState = buildReadyCheckState(playerIds);
-        this.readyConfirmations = new Set(readyState.confirmations);
-
-        this.broadcast({
-            type: 'READY_CHECK',
-            payload: {
-                confirmations: readyState.confirmations,
-                waitingFor: readyState.waitingFor
-            }
-        });
-
-        if (this.npcId) {
-            const delay = getNpcThinkingDelay(this.npcDifficulty);
-            this.scheduler.setTimeout(() => {
-                if (this.npcId) {
-                    this.confirmReady(this.npcId);
-                }
-            }, delay);
-        }
+        startRoomReadyCheck(this);
     }
 
     // 玩家確認準備完成
     confirmReady(playerId: string): void {
-        if (!this.validatePlayerInRoom(playerId)) {
-            return;
-        }
-
-        if (!this.orderDecisionState.result || this.gameState?.phase !== 'deciding_order') {
-            backendLogger.info(`ℹ️ 玩家 ${playerId} 的準備確認不在有效開局階段，忽略重送`, {
-                roomId: this.roomId,
-                playerId,
-                phase: this.gameState?.phase
-            });
-            return;
-        }
-
-        const update = buildConfirmationUpdate(
-            this.players.map(player => player.playerId),
-            this.readyConfirmations,
-            playerId
-        );
-        if (!update.added) {
-            backendLogger.info(`ℹ️ 玩家 ${playerId} 重複準備確認，忽略重送`, {
-                roomId: this.roomId,
-                playerId
-            });
-            return;
-        }
-
-        this.readyConfirmations = new Set(update.confirmations);
-
-        this.broadcast({
-            type: 'READY_STATUS',
-            payload: {
-                confirmations: update.confirmations,
-                waitingFor: update.waitingFor
-            }
-        });
-
-        if (update.waitingFor.length === 0) {
-            this.startGameWithOrder();
-        }
+        confirmRoomReady(this, playerId);
     }
 
     // 重新開始對戰（保留同房間與玩家）
     startRematch() {
-        backendLogger.info(`🔁 房間 ${this.roomId} 重新開始對戰`, {
-            roomId: this.roomId,
-            geishaSet: this.geishaSet,
-            setupMode: this.setupMode
-        });
-
-        this.clearNpcTimers();
-        this.rematchConfirmations.clear();
-        this.lastRoundStarterId = null;
-        this.currentCompletionId = null;
-        if (!this.regenerateBaseGeishas()) {
-            return;
-        }
-        this.orderDecisionState = createOrderDecisionState();
-
-        this.startOrderDecision();
+        startRoomRematch(this);
     }
 
     // 將訊息傳送給指定玩家（避免廣播時洩漏資訊）
