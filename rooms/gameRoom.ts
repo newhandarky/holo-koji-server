@@ -9,25 +9,16 @@ import type {
 import {
     DEFAULT_GEISHA_SET,
     DEFAULT_ROOM_SETUP_MODE,
-    createRandomizedGeishas,
-    createCustomSelectedGeishas,
     type PlayerMetaMap,
     type ServerGameState
 } from '../utils/gameUtils.js';
-import {
-    backendLogger,
-    summarizeGameState
-} from '../utils/runtimeLogger.js';
+import { backendLogger } from '../utils/runtimeLogger.js';
 import {
     type RoomSeat,
     type RoomSocketLike
 } from '../utils/roomSession.js';
 import { type NpcDifficulty } from '../npc/npcConfig.js';
-import {
-    buildPreparedRoundState,
-    inspectRoundSetup,
-    type DealSequenceStep
-} from '../game/roundPreparation.js';
+import { type DealSequenceStep } from '../game/roundPreparation.js';
 import {
     createOrderDecisionState,
     type OrderDecisionState
@@ -36,7 +27,6 @@ import {
     getActionAvailabilityError,
     type ServerAction
 } from '../game/actionValidation.js';
-import { GEISHA_SET_CONFIG_ERROR_MESSAGE } from './roomErrors.js';
 import { type RestorableRoomLike } from './roomRestore.js';
 import {
     buildRoomSnapshot,
@@ -103,12 +93,13 @@ import {
     startRoomReadyCheck,
     startRoomRematch
 } from './roomMatchRuntime.js';
-
-type RoundPreparationOptions = {
-    orderedPlayerIds?: string[] | null;
-    roundNumber?: number | null;
-    openOrderDecision?: boolean;
-};
+import {
+    ensureRoomBaseGeishas,
+    prepareRoomRoundState,
+    regenerateRoomBaseGeishas,
+    validateRoomRoundSetup,
+    type RoundPreparationOptions
+} from './roomRoundSetupRuntime.js';
 
 type GameRoomPlayer = RoomSeat & {
     sessionToken?: string;
@@ -226,30 +217,11 @@ export class GameRoom implements RestorableRoomLike {
     }
 
     regenerateBaseGeishas(): boolean {
-        try {
-            const activeGeishaSet = this.geishaSet ?? DEFAULT_GEISHA_SET;
-            this.baseGeishas = this.setupMode === 'custom'
-                ? createCustomSelectedGeishas(activeGeishaSet, this.customSelection ?? undefined)
-                : createRandomizedGeishas(activeGeishaSet);
-            return true;
-        } catch (error) {
-            backendLogger.error(`❌ 房間 ${this.roomId} 建立藝妓資料失敗`, {
-                roomId: this.roomId,
-                error: error instanceof Error ? error.message : 'unknown'
-            });
-            this.players.forEach((player) => {
-                this.sendError(player.playerId, GEISHA_SET_CONFIG_ERROR_MESSAGE);
-            });
-            return false;
-        }
+        return regenerateRoomBaseGeishas(this);
     }
 
     ensureBaseGeishas(): boolean {
-        if (this.baseGeishas) {
-            return true;
-        }
-
-        return this.regenerateBaseGeishas();
+        return ensureRoomBaseGeishas(this);
     }
 
     // 送出再來一場請求
@@ -404,53 +376,7 @@ export class GameRoom implements RestorableRoomLike {
 
     // 準備新回合的初始狀態（洗牌、移除卡、發牌）
     prepareRoundState({ orderedPlayerIds = null, roundNumber = null, openOrderDecision = true }: RoundPreparationOptions = {}) {
-        const playerIds = orderedPlayerIds ?? this.players.map(p => p.playerId);
-
-        if (playerIds.length < 2) {
-            backendLogger.warn(`⚠️ 房間 ${this.roomId} 嘗試準備回合，但玩家不足`, {
-                roomId: this.roomId,
-                playerCount: playerIds.length
-            });
-            return;
-        }
-
-        if (!this.ensureBaseGeishas()) {
-            return;
-        }
-
-        const baseGeishas = this.baseGeishas;
-        if (!baseGeishas) {
-            return;
-        }
-
-        const resolvedRound = roundNumber ?? this.gameState?.round ?? 1;
-        const preparation = buildPreparedRoundState({
-            roomId: this.roomId,
-            hostId: this.hostId,
-            playerIds,
-            baseGeishas,
-            playerMetaMap: this.getPlayerMetaMap(),
-            roundNumber: resolvedRound,
-            openOrderDecision
-        });
-        if (!preparation.ok) {
-            backendLogger.error(`❌ 房間 ${this.roomId} 準備回合失敗`, {
-                roomId: this.roomId,
-                error: preparation.errorMessage
-            });
-            return;
-        }
-        this.dealSequence = preparation.dealSequence;
-        this.gameState = preparation.gameState;
-
-        backendLogger.info(`🃏 房間 ${this.roomId} 已準備新回合`, {
-            roomId: this.roomId,
-            dealSequenceLength: this.dealSequence.length,
-            ...summarizeGameState(this.gameState)
-        });
-
-        // 回合初始化檢查（避免發牌數量或重複卡異常）
-        this.validateRoundSetup();
+        prepareRoomRoundState(this, { orderedPlayerIds, roundNumber, openOrderDecision });
     }
 
     // 準備順序決定狀態；真正開局牌務要等雙方確認順序後才建立
@@ -577,40 +503,7 @@ export class GameRoom implements RestorableRoomLike {
 
     // 驗證回合發牌與牌堆分配是否正確（用於偵錯與防呆）
     validateRoundSetup(): void {
-        if (!this.gameState) {
-            return;
-        }
-
-        const diagnostics = inspectRoundSetup(this.gameState);
-
-        // 規則：21 張牌中移除 1 張，剩 20 張進行發牌與牌堆
-        if (diagnostics.hasUnexpectedTotalCards) {
-            backendLogger.warn(`⚠️ 房間 ${this.roomId} 牌數異常`, {
-                roomId: this.roomId,
-                totalCardsInGame: diagnostics.totalCardsInGame,
-                expectedCards: 21
-            });
-        }
-
-        if (diagnostics.hasUnexpectedHandSizes) {
-            backendLogger.warn(`⚠️ 房間 ${this.roomId} 手牌數量異常`, {
-                roomId: this.roomId,
-                handSizes: diagnostics.handSizes.join(',')
-            });
-        }
-
-        if (diagnostics.hasUnexpectedDrawPileSize) {
-            backendLogger.warn(`⚠️ 房間 ${this.roomId} 牌堆數量異常`, {
-                roomId: this.roomId,
-                drawPileSize: diagnostics.drawPileSize
-            });
-        }
-
-        if (diagnostics.hasDuplicateCardIds) {
-            backendLogger.warn(`⚠️ 房間 ${this.roomId} 發現重複卡片 ID，請檢查洗牌與發牌流程`, {
-                roomId: this.roomId
-            });
-        }
+        validateRoomRoundSetup(this);
     }
 
     // 開始下一輪（不再重新決定順序，而是輪流先手）
