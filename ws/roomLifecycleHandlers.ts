@@ -28,8 +28,8 @@ import { normalizeNpcDifficulty } from '../npc/npcConfig.js';
 import { backendLogger } from '../utils/runtimeLogger.js';
 import type { WebSocketConnectionContext } from './connectionContext.js';
 import type {
-    MessageHandlerDependencies,
-    WebSocketRoomLike
+    RoomLifecycleHandlerDependencies,
+    RoomLifecycleHandlerLike
 } from './roomHandlerTypes.js';
 
 type JsonObject = Record<string, unknown>;
@@ -55,11 +55,11 @@ const rejectAttachedConnection = (
     return true;
 };
 
-export const handleCreateRoom = async <TRoom extends WebSocketRoomLike>(
+export const handleCreateRoom = async <TRoom extends RoomLifecycleHandlerLike>(
     ws: WebSocket,
     payload: unknown,
     context: WebSocketConnectionContext,
-    deps: MessageHandlerDependencies<TRoom>
+    deps: RoomLifecycleHandlerDependencies<TRoom>
 ): Promise<void> => {
     if (rejectAttachedConnection(ws, context)) {
         return;
@@ -155,11 +155,11 @@ export const handleCreateRoom = async <TRoom extends WebSocketRoomLike>(
     }
 };
 
-export const handleJoinRoom = async <TRoom extends WebSocketRoomLike>(
+export const handleJoinRoom = async <TRoom extends RoomLifecycleHandlerLike>(
     ws: WebSocket,
     payload: unknown,
     context: WebSocketConnectionContext,
-    deps: MessageHandlerDependencies<TRoom>
+    deps: RoomLifecycleHandlerDependencies<TRoom>
 ): Promise<void> => {
     if (rejectAttachedConnection(ws, context)) {
         return;
@@ -258,10 +258,10 @@ export const handleJoinRoom = async <TRoom extends WebSocketRoomLike>(
     }
 };
 
-export const handleLeaveRoom = <TRoom extends WebSocketRoomLike>(
+export const handleLeaveRoom = <TRoom extends RoomLifecycleHandlerLike>(
     ws: WebSocket,
     context: WebSocketConnectionContext,
-    deps: MessageHandlerDependencies<TRoom>
+    deps: RoomLifecycleHandlerDependencies<TRoom>
 ): void => {
     if (context.currentRoomId && context.currentPlayerId) {
         const room = deps.rooms.get(context.currentRoomId);

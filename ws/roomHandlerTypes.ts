@@ -20,7 +20,15 @@ import type {
     RoomSocketLike
 } from '../utils/roomSession.js';
 
-export interface WebSocketRoomLike extends RestorableRoomLike {
+export interface RoomMessageHandlerLike {
+    confirmOrder: (playerId: string) => void;
+    handleAction: (playerId: string, action: ServerAction) => void;
+    sendError: (playerId: string, message: string, code?: string) => void;
+    confirmReady: (playerId: string) => void;
+    requestRematch: (playerId: string) => void;
+}
+
+export interface RoomLifecycleHandlerLike extends RestorableRoomLike {
     players: Array<RoomSeat & { sessionToken?: string }>;
     maxPlayers: number;
     hostId: string | null;
@@ -38,17 +46,18 @@ export interface WebSocketRoomLike extends RestorableRoomLike {
     ensureBaseGeishas: () => boolean;
     buildClientGameState: (viewerId: string) => ServerGameState | null;
     startOrderDecision: () => void;
-    confirmOrder: (playerId: string) => void;
-    handleAction: (playerId: string, action: ServerAction) => void;
-    sendError: (playerId: string, message: string, code?: string) => void;
-    confirmReady: (playerId: string) => void;
-    requestRematch: (playerId: string) => void;
     detachPlayerConnection: (playerId: string, ws?: RoomSocketLike | null) => boolean;
     removePlayer: (playerId: string, ws?: RoomSocketLike | null) => boolean;
     broadcast: (message: { type: string; payload?: unknown }) => void;
 }
 
-export interface MessageHandlerDependencies<TRoom extends WebSocketRoomLike> {
+export type WebSocketRoomLike = RoomMessageHandlerLike & RoomLifecycleHandlerLike;
+
+export interface MessageHandlerDependencies<TRoom extends RoomMessageHandlerLike> {
+    rooms: Map<string, TRoom>;
+}
+
+export interface RoomLifecycleHandlerDependencies<TRoom extends RoomLifecycleHandlerLike> {
     rooms: Map<string, TRoom>;
     createRoom: (roomId: string) => TRoom;
     loadRoomSnapshot: <TSnapshot = unknown>(roomId: string) => Promise<TSnapshot | null>;
