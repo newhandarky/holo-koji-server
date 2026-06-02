@@ -77,7 +77,11 @@ export const addRoomPlayer = (
     const existingPlayer = seats.find(player => player.playerId === playerId);
 
     if (existingPlayer) {
-        if (existingPlayer.sessionToken && requestedSessionToken !== existingPlayer.sessionToken) {
+        if (
+            existingPlayer.isNpc
+            || !existingPlayer.sessionToken
+            || requestedSessionToken !== existingPlayer.sessionToken
+        ) {
             return { result: 'session-mismatch', seats: [...seats] };
         }
 
@@ -119,8 +123,16 @@ export const addRoomPlayer = (
 
 export const removeRoomPlayer = (
     seats: readonly RoomSeat[],
-    playerId: string
-): RoomSeat[] => seats.filter(player => player.playerId !== playerId);
+    playerId: string,
+    ws: RoomSocketLike | null = null
+): RoomSeat[] => {
+    const player = seats.find(seat => seat.playerId === playerId);
+    if (!player || (ws && player.ws !== ws)) {
+        return [...seats];
+    }
+
+    return seats.filter(seat => seat.playerId !== playerId);
+};
 
 export const detachRoomPlayer = (
     seats: readonly RoomSeat[],

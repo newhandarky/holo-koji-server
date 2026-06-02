@@ -40,12 +40,30 @@ const isRecord = (value: unknown): value is JsonObject => (
 
 const generateRoomId = (): string => Math.random().toString(36).substring(2, 8).toUpperCase();
 
+const rejectAttachedConnection = (
+    ws: WebSocket,
+    context: WebSocketConnectionContext
+): boolean => {
+    if (!context.currentRoomId || !context.currentPlayerId) {
+        return false;
+    }
+
+    ws.send(JSON.stringify({
+        type: 'ERROR',
+        payload: { message: '目前已在房間內', code: 'ALREADY_IN_ROOM' }
+    }));
+    return true;
+};
+
 export const handleCreateRoom = async <TRoom extends WebSocketRoomLike>(
     ws: WebSocket,
     payload: unknown,
     context: WebSocketConnectionContext,
     deps: MessageHandlerDependencies<TRoom>
 ): Promise<void> => {
+    if (rejectAttachedConnection(ws, context)) {
+        return;
+    }
     if (!isRecord(payload) || typeof payload.playerId !== 'string' || !payload.playerId) {
         ws.send(JSON.stringify({ type: 'ERROR', payload: { message: '缺少 playerId' } }));
         return;
@@ -143,6 +161,9 @@ export const handleJoinRoom = async <TRoom extends WebSocketRoomLike>(
     context: WebSocketConnectionContext,
     deps: MessageHandlerDependencies<TRoom>
 ): Promise<void> => {
+    if (rejectAttachedConnection(ws, context)) {
+        return;
+    }
     if (!isRecord(payload) || typeof payload.roomId !== 'string' || typeof payload.playerId !== 'string' || !payload.roomId || !payload.playerId) {
         ws.send(JSON.stringify({ type: 'ERROR', payload: { message: '缺少 roomId 或 playerId', code: 'INVALID_JOIN_REQUEST' } }));
         return;
@@ -249,7 +270,12 @@ export const handleLeaveRoom = <TRoom extends WebSocketRoomLike>(
             if (shouldDetachOnly) {
                 room.detachPlayerConnection(context.currentPlayerId, ws);
             } else {
-                room.removePlayer(context.currentPlayerId);
+                const removed = room.removePlayer(context.currentPlayerId, ws);
+                if (!removed) {
+                    context.currentRoomId = null;
+                    context.currentPlayerId = null;
+                    return;
+                }
                 room.broadcast({ type: 'PLAYER_LEFT', payload: { playerId: context.currentPlayerId } });
                 const firstSeat = room.players[0];
                 const hasOnlyNpc = room.players.length === 1 && room.npcId && firstSeat?.playerId === room.npcId;

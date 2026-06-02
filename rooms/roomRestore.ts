@@ -39,6 +39,7 @@ export interface RestorableRoomLike {
     baseGeishas: Geisha[] | null;
     gameState: ServerGameState | null;
     players: RoomSeat[];
+    resumeRestoredRuntime?: () => void;
 }
 
 export interface RestoreRoomDependencies<TRoom extends RestorableRoomLike> {
@@ -119,6 +120,7 @@ export const restoreRoomFromSnapshot = <TRoom extends RestorableRoomLike>(
     if (room.gameState) {
         room.gameState.geishaSet = snapshotGeishaSet;
     }
+    room.resumeRestoredRuntime?.();
 
     return { room, errorMessage: null };
 };

@@ -44,7 +44,7 @@ export interface WebSocketRoomLike extends RestorableRoomLike {
     confirmReady: (playerId: string) => void;
     requestRematch: (playerId: string) => void;
     detachPlayerConnection: (playerId: string, ws?: RoomSocketLike | null) => boolean;
-    removePlayer: (playerId: string) => void;
+    removePlayer: (playerId: string, ws?: RoomSocketLike | null) => boolean;
     broadcast: (message: { type: string; payload?: unknown }) => void;
 }
 
