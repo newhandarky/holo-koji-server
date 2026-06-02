@@ -34,3 +34,14 @@ test('buildReadyCheckState creates an immutable empty confirmation state', () =>
     });
     assert.deepEqual(playerIds, ['host', 'guest']);
 });
+
+test('buildRematchConfirmationUpdate consumes one-shot iterables once', () => {
+    function* existingConfirmations() {
+        yield 'host';
+    }
+
+    const update = buildRematchConfirmationUpdate(['host', 'guest'], existingConfirmations(), 'host');
+
+    assert.equal(update.added, false);
+    assert.deepEqual(update.confirmations, ['host']);
+});

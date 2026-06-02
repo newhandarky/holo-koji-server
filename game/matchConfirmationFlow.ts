@@ -17,7 +17,8 @@ export const buildRematchConfirmationUpdate = (
     npcId: string | null = null
 ): ConfirmationFlowUpdate => {
     const confirmations = Array.from(existingConfirmations);
-    if (!confirmations.includes(playerId)) {
+    const added = !confirmations.includes(playerId);
+    if (added) {
         confirmations.push(playerId);
     }
     if (npcId && !confirmations.includes(npcId)) {
@@ -25,7 +26,7 @@ export const buildRematchConfirmationUpdate = (
     }
 
     return {
-        added: !Array.from(existingConfirmations).includes(playerId),
+        added,
         confirmations,
         waitingFor: playerIds.filter(id => !confirmations.includes(id)),
         shouldStartRematch: confirmations.length >= 2
