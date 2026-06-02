@@ -4,7 +4,7 @@ import type {
     PendingInteraction,
     Player
 } from '@newhandarky/hanakoji-game-types';
-import type { ServerGameState } from '../utils/gameUtils.js';
+import type { ServerGameState } from '../game/serverGameStateTypes.js';
 import type {
     RoomSeat,
     RoomSocketLike

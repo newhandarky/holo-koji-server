@@ -4,10 +4,12 @@ import {
     buildOpeningDealSummary,
     cloneGeishas,
     createPlayer,
-    type PlayerMetaMap,
-    type RandomSource,
-    type ServerGameState
-} from '../utils/gameUtils.js';
+    type RandomSource
+} from './gameStateFactory.js';
+import type {
+    PlayerMetaMap,
+    ServerGameState
+} from './serverGameStateTypes.js';
 
 export type DealSequenceStep = {
     order: number;

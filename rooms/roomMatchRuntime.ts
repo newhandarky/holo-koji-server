@@ -16,7 +16,7 @@ import {
     type NpcDifficulty
 } from '../npc/npcConfig.js';
 import { backendLogger } from '../utils/runtimeLogger.js';
-import type { ServerGameState } from '../utils/gameUtils.js';
+import type { ServerGameState } from '../game/serverGameStateTypes.js';
 import type { RoomScheduler } from './roomScheduler.js';
 import type { WireMessage } from './roomMessaging.js';
 

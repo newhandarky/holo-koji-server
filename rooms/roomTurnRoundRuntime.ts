@@ -1,8 +1,6 @@
 import type { ItemCard } from '@newhandarky/hanakoji-game-types';
-import {
-    cloneGeishasForNextRound,
-    type ServerGameState
-} from '../utils/gameUtils.js';
+import { cloneGeishasForNextRound } from '../game/gameStateFactory.js';
+import type { ServerGameState } from '../game/serverGameStateTypes.js';
 import { accountStore } from '../utils/accountStore.js';
 import { backendLogger } from '../utils/runtimeLogger.js';
 import {

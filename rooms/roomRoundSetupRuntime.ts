@@ -4,13 +4,15 @@ import type {
     GeishaSet,
     RoomSetupMode
 } from '@newhandarky/hanakoji-game-types';
+import { DEFAULT_GEISHA_SET } from '../game/geishaSetRules.js';
 import {
-    DEFAULT_GEISHA_SET,
     createCustomSelectedGeishas,
-    createRandomizedGeishas,
-    type PlayerMetaMap,
-    type ServerGameState
-} from '../utils/gameUtils.js';
+    createRandomizedGeishas
+} from '../game/gameStateFactory.js';
+import type {
+    PlayerMetaMap,
+    ServerGameState
+} from '../game/serverGameStateTypes.js';
 import {
     backendLogger,
     summarizeGameState

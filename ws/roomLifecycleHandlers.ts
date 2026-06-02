@@ -4,13 +4,13 @@ import type {
     GeishaSet,
     JoinRoomPayload
 } from '@newhandarky/hanakoji-game-types';
+import { createWaitingGameState } from '../game/gameStateFactory.js';
 import {
     DEFAULT_ROOM_SETUP_MODE,
-    createWaitingGameState,
     isSupportedGeishaSet,
     normalizeGeishaSet,
     normalizeRoomSetupMode
-} from '../utils/gameUtils.js';
+} from '../game/geishaSetRules.js';
 import type { RestorableRoomSnapshot } from '../rooms/roomRestore.js';
 import {
     normalizeCustomSelection,

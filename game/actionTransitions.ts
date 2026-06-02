@@ -5,8 +5,8 @@ import type {
     PendingInteraction,
     Player
 } from '@newhandarky/hanakoji-game-types';
-import { markOpeningDealNotReplayable } from '../utils/gameUtils.js';
 import { getCardOwnershipError } from './actionValidation.js';
+import { markOpeningDealNotReplayable } from './gameStateFactory.js';
 
 type TransitionFailure = {
     ok: false;

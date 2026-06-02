@@ -14,7 +14,7 @@ import type { RoomScheduler } from '../rooms/roomScheduler.js';
 import type {
     PlayerMetaMap,
     ServerGameState
-} from '../utils/gameUtils.js';
+} from '../game/serverGameStateTypes.js';
 import type {
     RoomSeat,
     RoomSocketLike

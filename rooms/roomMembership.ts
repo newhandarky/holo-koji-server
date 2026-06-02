@@ -1,6 +1,6 @@
 import { randomBytes } from 'node:crypto';
 import type { LineAccountProfile } from '@newhandarky/hanakoji-game-types';
-import type { PlayerMetaMap } from '../utils/gameUtils.js';
+import type { PlayerMetaMap } from '../game/serverGameStateTypes.js';
 import {
     createDisconnectedSocket,
     type RoomSeat,

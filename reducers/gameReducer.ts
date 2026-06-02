@@ -1,7 +1,7 @@
 // src/reducers/gameReducer.ts
 import { GameState, GameAction, Geisha } from "@newhandarky/hanakoji-game-types"
-// TS 對 .js 的 re-export 沒有型別資訊，因此 IDE 會判定沒有 export
-import { createRandomizedGeishas } from '../utils/gameUtils';
+// 後端統一由 game state factory 建立藝妓資料
+import { createRandomizedGeishas } from '../game/gameStateFactory';
 import { backendLogger } from '../utils/runtimeLogger.js';
 
 // 初始藝妓資料（隨機順序）
