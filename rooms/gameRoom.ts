@@ -21,22 +21,14 @@ import {
     summarizeGameState
 } from '../utils/runtimeLogger.js';
 import {
-    createNpcSocket,
     type RoomSeat,
     type RoomSocketLike
 } from '../utils/roomSession.js';
 import { accountStore } from '../utils/accountStore.js';
 import {
-    getNpcDifficultyLabel,
     getNpcThinkingDelay,
-    normalizeNpcDifficulty,
     type NpcDifficulty
 } from '../npc/npcConfig.js';
-import {
-    buildNpcActionChoice,
-    pickNpcCompetitionGroupResponse,
-    pickNpcGiftCardResponse
-} from '../npc/npcStrategy.js';
 import {
     determineWinner,
     getNextRoundOrder,
@@ -105,10 +97,18 @@ import {
     type WireMessage
 } from './roomMessaging.js';
 import {
+    replaceScheduledTimer,
     roomScheduler,
     type RoomScheduler,
     type TimerHandle
 } from './roomScheduler.js';
+import {
+    buildNpcResponseAction,
+    buildNpcSeat,
+    buildNpcTurnAction,
+    canScheduleNpcResponse,
+    canScheduleNpcTurn
+} from './roomNpcRuntime.js';
 
 type RoundPreparationOptions = {
     orderedPlayerIds?: string[] | null;
@@ -209,29 +209,17 @@ export class GameRoom implements RestorableRoomLike {
             return null;
         }
 
-        const normalized = normalizeNpcDifficulty(difficulty);
-        const label = getNpcDifficultyLabel(normalized);
-        const npcId = `${label}`;
-        const npcSocket = createNpcSocket();
-
-        this.players.push({
-            playerId: npcId,
-            ws: npcSocket,
-            isNpc: true,
-            name: npcId,
-            lineUserId: undefined,
-            avatarUrl: undefined,
-            accountProfile: undefined
-        });
-        this.npcId = npcId;
-        this.npcDifficulty = normalized;
+        const update = buildNpcSeat(difficulty);
+        this.players.push(update.seat);
+        this.npcId = update.npcId;
+        this.npcDifficulty = update.difficulty;
 
         backendLogger.info(`🤖 NPC 玩家加入房間 ${this.roomId}`, {
             roomId: this.roomId,
-            npcId,
-            difficulty: normalized
+            npcId: update.npcId,
+            difficulty: update.difficulty
         });
-        return npcId;
+        return update.npcId;
     }
 
     getPlayerMetaMap(): PlayerMetaMap {
@@ -241,11 +229,11 @@ export class GameRoom implements RestorableRoomLike {
     // 清除 NPC 計時器（避免重複執行）
     clearNpcTimers(): void {
         if (this.npcActionTimer) {
-            clearTimeout(this.npcActionTimer);
+            this.scheduler.clearTimeout(this.npcActionTimer);
             this.npcActionTimer = null;
         }
         if (this.npcResponseTimer) {
-            clearTimeout(this.npcResponseTimer);
+            this.scheduler.clearTimeout(this.npcResponseTimer);
             this.npcResponseTimer = null;
         }
     }
@@ -911,25 +899,12 @@ export class GameRoom implements RestorableRoomLike {
 
     // 安排 NPC 行動
     scheduleNpcTurn(): void {
-        if (!this.gameState || !this.npcId) {
-            return;
-        }
-
-        const currentPlayer = this.gameState.players[this.gameState.currentPlayer];
-        if (!currentPlayer || currentPlayer.id !== this.npcId) {
-            return;
-        }
-
-        if (this.gameState.phase !== 'playing' || this.gameState.pendingInteraction) {
+        if (!canScheduleNpcTurn(this.gameState, this.npcId)) {
             return;
         }
 
         const delay = getNpcThinkingDelay(this.npcDifficulty);
-        if (this.npcActionTimer) {
-            clearTimeout(this.npcActionTimer);
-        }
-
-        this.npcActionTimer = setTimeout(() => {
+        this.npcActionTimer = replaceScheduledTimer(this.scheduler, this.npcActionTimer, () => {
             this.npcActionTimer = null;
             this.performNpcAction();
         }, delay);
@@ -937,21 +912,12 @@ export class GameRoom implements RestorableRoomLike {
 
     // 安排 NPC 回應互動（贈予/競爭）
     scheduleNpcResponse(): void {
-        if (!this.gameState || !this.npcId) {
-            return;
-        }
-
-        const pending = this.gameState.pendingInteraction;
-        if (!pending || pending.targetPlayerId !== this.npcId) {
+        if (!canScheduleNpcResponse(this.gameState?.pendingInteraction, this.npcId)) {
             return;
         }
 
         const delay = getNpcThinkingDelay(this.npcDifficulty);
-        if (this.npcResponseTimer) {
-            clearTimeout(this.npcResponseTimer);
-        }
-
-        this.npcResponseTimer = setTimeout(() => {
+        this.npcResponseTimer = replaceScheduledTimer(this.scheduler, this.npcResponseTimer, () => {
             this.npcResponseTimer = null;
             this.performNpcResponse();
         }, delay);
@@ -959,82 +925,30 @@ export class GameRoom implements RestorableRoomLike {
 
     // NPC 執行回合行動
     performNpcAction(): void {
-        if (!this.gameState || !this.npcId) {
+        const npcId = this.npcId;
+        if (!canScheduleNpcTurn(this.gameState, npcId) || !npcId) {
             return;
         }
-
-        const npcPlayer = this.getPlayerState(this.npcId);
-        if (!npcPlayer || this.gameState.currentPlayer >= this.gameState.players.length) {
-            return;
-        }
-
-        if (this.gameState.players[this.gameState.currentPlayer]?.id !== this.npcId) {
-            return;
-        }
-
-        if (this.gameState.pendingInteraction || this.gameState.phase !== 'playing') {
-            return;
-        }
-
-        const action = this.buildNpcAction(npcPlayer);
+        const action = buildNpcTurnAction(this.gameState, npcId, this.npcDifficulty);
         if (!action) {
             this.endTurn();
             return;
         }
 
-        this.handleAction(this.npcId, action);
+        this.handleAction(npcId, action);
     }
 
     // NPC 回應互動（贈予/競爭）
     performNpcResponse(): void {
-        if (!this.gameState || !this.npcId) {
-            return;
-        }
-
-        const pending = this.gameState.pendingInteraction;
-        if (!pending || pending.targetPlayerId !== this.npcId) {
-            return;
-        }
-
-        if (pending.type === 'GIFT_SELECTION') {
-            const npcPlayer = this.getPlayerState(this.npcId);
-            const opponent = this.getOpponentState(this.npcId);
-            const card = pickNpcGiftCardResponse(
-                pending.offeredCards ?? [],
-                this.npcDifficulty,
-                npcPlayer,
-                opponent,
-                this.gameState.geishas
-            );
-            if (card) {
-                this.handleAction(this.npcId, { type: 'RESOLVE_GIFT', payload: { chosenCardId: card.id } });
-            }
-            return;
-        }
-
-        if (pending.type === 'COMPETITION_SELECTION') {
-            const npcPlayer = this.getPlayerState(this.npcId);
-            const opponent = this.getOpponentState(this.npcId);
-            const index = pickNpcCompetitionGroupResponse(
-                pending.groups ?? [],
-                this.npcDifficulty,
-                npcPlayer,
-                opponent,
-                this.gameState.geishas
-            );
-            if (index !== null) {
-                this.handleAction(this.npcId, { type: 'RESOLVE_COMPETITION', payload: { chosenGroupIndex: index } });
-            }
+        const action = buildNpcResponseAction(this.gameState, this.npcId, this.npcDifficulty);
+        if (action && this.npcId) {
+            this.handleAction(this.npcId, action);
         }
     }
 
     // NPC 決定要執行的行動與卡片
     buildNpcAction(player: GamePlayer): ServerAction | null {
-        const opponent = this.getOpponentState(player.id);
-        if (!opponent) {
-            return null;
-        }
-        return buildNpcActionChoice(player, opponent, this.gameState?.geishas ?? [], this.npcDifficulty);
+        return buildNpcTurnAction(this.gameState, player.id, this.npcDifficulty);
     }
 
     // 結束回合並切換到下一位可行動玩家

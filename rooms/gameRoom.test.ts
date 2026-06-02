@@ -35,17 +35,22 @@ const createCapturingSocket = (): { ws: RoomSocketLike; messages: CapturedMessag
 const createFakeScheduler = (): {
     scheduler: RoomScheduler;
     scheduled: Array<{ callback: () => void; delayMs: number }>;
+    cleared: TimerHandle[];
 } => {
     const scheduled: Array<{ callback: () => void; delayMs: number }> = [];
+    const cleared: TimerHandle[] = [];
     return {
         scheduler: {
             setTimeout: (callback, delayMs) => {
                 scheduled.push({ callback, delayMs });
                 return scheduled.length as unknown as TimerHandle;
             },
-            clearTimeout: () => {}
+            clearTimeout: timer => {
+                cleared.push(timer);
+            }
         },
-        scheduled
+        scheduled,
+        cleared
     };
 };
 
@@ -201,4 +206,27 @@ test('GameRoom schedules order decision and ready check with existing delays', (
     room.confirmOrder('host');
     room.confirmOrder('guest');
     assert.equal(scheduled[1]?.delayMs, 800);
+});
+
+test('GameRoom schedules npc turns with the existing delay and replaces stale timers', () => {
+    const { scheduler, scheduled, cleared } = createFakeScheduler();
+    const room = new GameRoom('room-npc-scheduler', scheduler);
+    room.players = [{ playerId: 'host', ws: createDisconnectedSocket() }];
+    const npcId = room.addNpcPlayer('hard');
+    room.gameState = {
+        phase: 'playing',
+        currentPlayer: 1,
+        pendingInteraction: null,
+        players: [
+            { id: 'host' },
+            { id: npcId }
+        ]
+    } as NonNullable<typeof room.gameState>;
+
+    room.scheduleNpcTurn();
+    room.scheduleNpcTurn();
+
+    assert.equal(scheduled[0]?.delayMs, 700);
+    assert.equal(scheduled[1]?.delayMs, 700);
+    assert.deepEqual(cleared, [1]);
 });
