@@ -1,4 +1,4 @@
-import { GameState, LineAccountProfile } from '@newhandarky/hanakoji-game-types';
+import type { GameState, LineAccountProfile } from '@newhandarky/hanakoji-game-types';
 
 export interface RoomSocketLike {
     readyState: number;
