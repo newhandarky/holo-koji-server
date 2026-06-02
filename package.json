@@ -10,6 +10,7 @@
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
+    "postinstall": "npm run build",
     "test": "npm run build && node --test dist/utils/*.test.js dist/npc/*.test.js dist/game/*.test.js dist/rooms/*.test.js dist/ws/*.test.js",
     "start": "node dist/index.js",
     "dev": "npm run build && node dist/index.js",
@@ -23,17 +24,17 @@
   "author": "Atsushi",
   "license": "MIT",
   "dependencies": {
-    "cors": "^2.8.5",
-    "express": "^4.19.2",
-    "redis": "^4.7.1",
-    "ws": "^8.14.2"
-  },
-  "devDependencies": {
     "@types/cors": "^2.8.19",
     "@types/express": "^4.17.25",
     "@types/node": "^20.19.41",
     "@types/ws": "^8.18.1",
-    "nodemon": "^3.0.1",
-    "typescript": "^5.9.3"
+    "cors": "^2.8.5",
+    "express": "^4.19.2",
+    "redis": "^4.7.1",
+    "typescript": "^5.9.3",
+    "ws": "^8.14.2"
+  },
+  "devDependencies": {
+    "nodemon": "^3.0.1"
   }
 }
