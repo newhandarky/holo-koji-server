@@ -3,7 +3,7 @@ import type { GameActionPayload } from '../game/actionValidation.js';
 import type { WebSocketConnectionContext } from './connectionContext.js';
 import type {
     MessageHandlerDependencies,
-    WebSocketRoomLike
+    RoomMessageHandlerLike
 } from './roomHandlerTypes.js';
 
 type JsonObject = Record<string, unknown>;
@@ -12,7 +12,7 @@ const isRecord = (value: unknown): value is JsonObject => (
     Boolean(value) && typeof value === 'object' && !Array.isArray(value)
 );
 
-export const handleConfirmOrder = <TRoom extends WebSocketRoomLike>(
+export const handleConfirmOrder = <TRoom extends RoomMessageHandlerLike>(
     context: WebSocketConnectionContext,
     deps: MessageHandlerDependencies<TRoom>
 ): void => {
@@ -22,7 +22,7 @@ export const handleConfirmOrder = <TRoom extends WebSocketRoomLike>(
     deps.rooms.get(context.currentRoomId)?.confirmOrder(context.currentPlayerId);
 };
 
-export const handleGameAction = <TRoom extends WebSocketRoomLike>(
+export const handleGameAction = <TRoom extends RoomMessageHandlerLike>(
     payload: unknown,
     context: WebSocketConnectionContext,
     deps: MessageHandlerDependencies<TRoom>
@@ -51,7 +51,7 @@ export const handleGameAction = <TRoom extends WebSocketRoomLike>(
     });
 };
 
-export const handleReadyConfirm = <TRoom extends WebSocketRoomLike>(
+export const handleReadyConfirm = <TRoom extends RoomMessageHandlerLike>(
     context: WebSocketConnectionContext,
     deps: MessageHandlerDependencies<TRoom>
 ): void => {
@@ -61,7 +61,7 @@ export const handleReadyConfirm = <TRoom extends WebSocketRoomLike>(
     deps.rooms.get(context.currentRoomId)?.confirmReady(context.currentPlayerId);
 };
 
-export const handleRematchRequest = <TRoom extends WebSocketRoomLike>(
+export const handleRematchRequest = <TRoom extends RoomMessageHandlerLike>(
     context: WebSocketConnectionContext,
     deps: MessageHandlerDependencies<TRoom>
 ): void => {
@@ -73,5 +73,5 @@ export const handleRematchRequest = <TRoom extends WebSocketRoomLike>(
 
 export type {
     MessageHandlerDependencies,
-    WebSocketRoomLike
+    RoomMessageHandlerLike
 } from './roomHandlerTypes.js';
