@@ -1,8 +1,6 @@
 import type {
     AccountPersistenceStatus,
-    AchievementCatalogItem,
     AchievementId,
-    AchievementItemState,
     AchievementStatus,
     AchievementStatusResult,
     AchievementSummaryItem
@@ -11,6 +9,25 @@ import {
     createJsonPersistenceAdapter,
     type KeyValueClient
 } from './persistenceAdapter.js';
+import {
+    ACHIEVEMENT_CATALOG,
+    isAchievementId
+} from './achievementCatalog.js';
+import {
+    buildAchievementSummaryItem,
+    buildAchievementUnlockRecord,
+    buildNextAchievementProgress,
+    countNewAchievementUnlocks,
+    shouldUnlockAchievement,
+    type AchievementProgressRecord,
+    type AchievementUnlockRecord
+} from './achievementProgress.js';
+
+export { ACHIEVEMENT_CATALOG } from './achievementCatalog.js';
+export type {
+    AchievementProgressRecord,
+    AchievementUnlockRecord
+} from './achievementProgress.js';
 
 const REDIS_URL = process.env.REDIS_URL;
 const ACHIEVEMENT_UNAVAILABLE_MESSAGE = '成就暫時不可用，進度目前無法保存。';
@@ -18,21 +35,6 @@ const ACHIEVEMENT_GUEST_MESSAGE = '成就需要綁定帳號後才會保存。';
 const ACHIEVEMENT_PROGRESS_KEY_PREFIX = 'hanamikoji:achievement:progress:';
 const ACHIEVEMENT_UNLOCK_KEY_PREFIX = 'hanamikoji:achievement:unlock:';
 const ACHIEVEMENT_COMPLETION_KEY_PREFIX = 'hanamikoji:achievement:completion:';
-
-interface AchievementProgressRecord {
-    lineUserId: string;
-    achievementId: AchievementId;
-    currentValue: number;
-    target: number;
-    updatedAt: string;
-}
-
-interface AchievementUnlockRecord {
-    lineUserId: string;
-    achievementId: AchievementId;
-    unlockedAt: string;
-    seenAt?: string;
-}
 
 interface ProcessedCompletionRecord {
     completionId: string;
@@ -80,37 +82,6 @@ const temporaryPersistenceStatus: AccountPersistenceStatus = {
     available: true,
     message: 'Account profiles are temporary in this environment.'
 };
-
-export const ACHIEVEMENT_CATALOG: AchievementCatalogItem[] = [
-    {
-        achievementId: 'first_completed_match',
-        title: '初次花見',
-        description: '完成第一場對局。',
-        conditionType: 'completed_games',
-        target: 1
-    },
-    {
-        achievementId: 'first_win',
-        title: '初次勝利',
-        description: '贏得第一場對局。',
-        conditionType: 'wins',
-        target: 1
-    },
-    {
-        achievementId: 'complete_3_matches',
-        title: '三度赴約',
-        description: '完成 3 場對局。',
-        conditionType: 'completed_games',
-        target: 3
-    },
-    {
-        achievementId: 'win_3_matches',
-        title: '三勝之姿',
-        description: '贏得 3 場對局。',
-        conditionType: 'wins',
-        target: 3
-    }
-];
 
 export const createAchievementStore = ({
     now = () => new Date(),
@@ -179,30 +150,13 @@ export const createAchievementStore = ({
         for (const item of ACHIEVEMENT_CATALOG) {
             const progress = await getProgress(lineUserId, item.achievementId);
             const unlock = await getUnlock(lineUserId, item.achievementId);
-            const currentValue = Math.min(progress?.currentValue ?? 0, item.target);
-            const state: AchievementItemState = unlock
-                ? 'unlocked'
-                : currentValue > 0
-                    ? 'in_progress'
-                    : 'locked';
-
-            const summaryItem = {
-                achievementId: item.achievementId,
-                title: item.title,
-                description: item.description,
-                state,
-                currentValue,
-                target: item.target,
-                ...(unlock ? { unlockedAt: unlock.unlockedAt } : {}),
-                isNew: Boolean(unlock && !unlock.seenAt)
-            };
-            items.push(summaryItem);
+            items.push(buildAchievementSummaryItem(item, progress, unlock));
         }
 
         return {
             status: 'available',
             persistenceStatus,
-            newUnlockCount: items.filter((item) => item.isNew).length,
+            newUnlockCount: countNewAchievementUnlocks(items),
             items,
             generatedAt: now().toISOString()
         };
@@ -228,24 +182,18 @@ export const createAchievementStore = ({
         const updates: AchievementProgressRecord[] = [];
         for (const item of ACHIEVEMENT_CATALOG) {
             const existing = await getProgress(lineUserId, item.achievementId);
-            const increment = item.conditionType === 'completed_games' || (item.conditionType === 'wins' && won) ? 1 : 0;
-            const currentValue = (existing?.currentValue ?? 0) + increment;
-            const nextProgress = {
+            const nextProgress = buildNextAchievementProgress({
+                item,
+                existing,
                 lineUserId,
-                achievementId: item.achievementId,
-                currentValue,
-                target: item.target,
-                updatedAt: completedAt
-            };
+                won,
+                completedAt
+            });
             await setProgress(nextProgress);
 
             const existingUnlock = await getUnlock(lineUserId, item.achievementId);
-            if (!existingUnlock && currentValue >= item.target) {
-                await setUnlock({
-                    lineUserId,
-                    achievementId: item.achievementId,
-                    unlockedAt: completedAt
-                });
+            if (shouldUnlockAchievement(nextProgress, existingUnlock)) {
+                await setUnlock(buildAchievementUnlockRecord(nextProgress, completedAt));
             }
             updates.push(nextProgress);
         }
@@ -336,9 +284,8 @@ export const createAchievementStore = ({
         }
 
         try {
-            const allowedIds = new Set(ACHIEVEMENT_CATALOG.map((item) => item.achievementId));
             for (const achievementId of achievementIds) {
-                if (!allowedIds.has(achievementId)) {
+                if (!isAchievementId(achievementId)) {
                     continue;
                 }
                 const unlock = await getUnlock(lineUserId, achievementId);
