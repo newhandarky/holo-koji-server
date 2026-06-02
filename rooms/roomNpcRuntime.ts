@@ -6,10 +6,12 @@ import {
     type NpcDifficulty
 } from '../npc/npcConfig.js';
 import {
-    buildNpcActionChoice,
+    buildNpcActionChoice
+} from '../npc/npcActionPlanner.js';
+import {
     pickNpcCompetitionGroupResponse,
     pickNpcGiftCardResponse
-} from '../npc/npcStrategy.js';
+} from '../npc/npcResponseStrategy.js';
 import type { ServerAction } from '../game/actionValidation.js';
 import type { ServerGameState } from '../game/serverGameStateTypes.js';
 import {
