@@ -2,7 +2,6 @@
 import type {
     ActionType,
     CustomCharacterSelection,
-    GameState,
     Geisha,
     GeishaSet,
     RoomSetupMode
@@ -12,7 +11,6 @@ import {
     DEFAULT_ROOM_SETUP_MODE,
     createRandomizedGeishas,
     createCustomSelectedGeishas,
-    cloneGeishasForNextRound,
     type PlayerMetaMap,
     type ServerGameState
 } from '../utils/gameUtils.js';
@@ -24,28 +22,17 @@ import {
     type RoomSeat,
     type RoomSocketLike
 } from '../utils/roomSession.js';
-import { accountStore } from '../utils/accountStore.js';
 import {
     getNpcThinkingDelay,
     type NpcDifficulty
 } from '../npc/npcConfig.js';
-import {
-    determineWinner,
-    getNextRoundOrder,
-    resolveRoundBoard
-} from '../game/roundResolution.js';
 import {
     buildPreparedRoundState,
     inspectRoundSetup,
     type DealSequenceStep
 } from '../game/roundPreparation.js';
 import {
-    applyOrderConfirmation,
-    applyOrderDecisionResult,
     buildConfirmationUpdate,
-    buildOrderDecisionGameState,
-    canStartGameWithOrder,
-    choosePlayerOrder,
     createOrderDecisionState,
     type OrderDecisionState
 } from '../game/openingFlow.js';
@@ -55,24 +42,8 @@ import {
 } from '../game/matchConfirmationFlow.js';
 import {
     getActionAvailabilityError,
-    getPendingInteractionError,
-    toCompetitionGroups,
-    toStringArray,
     type ServerAction
 } from '../game/actionValidation.js';
-import {
-    applySecretAction,
-    applyTradeOffAction,
-    initiateCompetitionAction,
-    initiateGiftAction,
-    resolveCompetitionAction,
-    resolveGiftAction
-} from '../game/actionTransitions.js';
-import {
-    advanceToNextTurn,
-    prepareCurrentTurn,
-    revealSecretCards
-} from '../game/turnLifecycle.js';
 import { GEISHA_SET_CONFIG_ERROR_MESSAGE } from './roomErrors.js';
 import { type RestorableRoomLike } from './roomRestore.js';
 import {
@@ -92,7 +63,6 @@ import {
     buildMaskedDealSequence,
     buildPendingInteractionMessages,
     buildViewerGameState,
-    createMaskedCard,
     sendRoomMessage,
     type WireMessage
 } from './roomMessaging.js';
@@ -109,6 +79,31 @@ import {
     canScheduleNpcResponse,
     canScheduleNpcTurn
 } from './roomNpcRuntime.js';
+import {
+    handleRoomAction,
+    handleRoomInitiateCompetition,
+    handleRoomInitiateGift,
+    handleRoomPlaySecret,
+    handleRoomResolveCompetition,
+    handleRoomResolveGift,
+    handleRoomTradeOff,
+    validateRoomPendingInteraction
+} from './roomActionRuntime.js';
+import {
+    beginRoomTurnForCurrentPlayer,
+    endRoomTurn,
+    resolveRoomRound,
+    scheduleRoomNextRound,
+    startRoomNextRound
+} from './roomTurnRoundRuntime.js';
+import {
+    confirmRoomOrder,
+    decideRoomOrder,
+    prepareRoomOrderDecisionState,
+    startRoomGameWithOrder,
+    startRoomOrderDecision
+} from './roomOpeningRuntime.js';
+import { resumeRestoredRoomRuntime } from './roomRuntimeResume.js';
 
 type RoundPreparationOptions = {
     orderedPlayerIds?: string[] | null;
@@ -565,240 +560,27 @@ export class GameRoom implements RestorableRoomLike {
 
     // 準備順序決定狀態；真正開局牌務要等雙方確認順序後才建立
     prepareOrderDecisionState(): boolean {
-        const playerIds = this.players.map(p => p.playerId);
-
-        if (playerIds.length < 2) {
-            backendLogger.warn(`⚠️ 房間 ${this.roomId} 嘗試準備順序決定，但玩家不足`, {
-                roomId: this.roomId,
-                playerCount: playerIds.length
-            });
-            return false;
-        }
-
-        if (!this.ensureBaseGeishas()) {
-            return false;
-        }
-        const baseGeishas = this.baseGeishas;
-        if (!baseGeishas) {
-            return false;
-        }
-
-        const preparation = buildOrderDecisionGameState({
-            roomId: this.roomId,
-            hostId: this.hostId,
-            playerIds,
-            baseGeishas,
-            geishaSet: this.geishaSet,
-            playerMetaMap: this.getPlayerMetaMap()
-        });
-        if (!preparation.ok) {
-            backendLogger.warn(`⚠️ 房間 ${this.roomId} 無法準備順序決定`, {
-                roomId: this.roomId,
-                error: preparation.errorMessage
-            });
-            return false;
-        }
-
-        this.gameState = preparation.value;
-        this.dealSequence = [];
-        return true;
+        return prepareRoomOrderDecisionState(this);
     }
 
     // 開始隨機決定順序
     startOrderDecision(): void {
-        backendLogger.info(`🎲 房間 ${this.roomId} 開始隨機決定玩家順序`, {
-            roomId: this.roomId
-        });
-
-        if (!this.prepareOrderDecisionState()) {
-            return;
-        }
-        this.orderDecisionState.isDeciding = true;
-        this.orderDecisionState.confirmations.clear();
-
-        // 廣播開始決定順序
-        this.broadcast({
-            type: 'ORDER_DECISION_START',
-            payload: {
-                players: this.players.map(p => p.playerId)
-            }
-        });
-
-        if (this.gameState) {
-            this.broadcastGameState();
-        }
-
-        // 延遲 2 秒後顯示結果（模擬隨機過程）
-        this.scheduler.setTimeout(() => {
-            this.decideOrder();
-        }, 2000);
+        startRoomOrderDecision(this);
     }
 
     // 決定順序並廣播結果
     decideOrder(): void {
-        const playerIds = this.players.map(p => p.playerId);
-
-        const result = choosePlayerOrder(playerIds);
-        if (!result) {
-            backendLogger.warn(`⚠️ 房間 ${this.roomId} 無法決定順序`, {
-                roomId: this.roomId,
-                playerCount: playerIds.length
-            });
-            return;
-        }
-        const { firstPlayer, secondPlayer } = result;
-        this.orderDecisionState.result = result;
-
-        backendLogger.info(`🎲 房間 ${this.roomId} 順序決定完成`, {
-            roomId: this.roomId,
-            firstPlayer: firstPlayer,
-            secondPlayer: secondPlayer
-        });
-
-        const gameState = this.gameState;
-        if (gameState) {
-            this.gameState = applyOrderDecisionResult(gameState, result);
-        }
-
-        // 廣播結果
-        this.broadcast({
-            type: 'ORDER_DECISION_RESULT',
-            payload: this.orderDecisionState.result
-        });
-
-        if (this.gameState) {
-            this.broadcastGameState();
-        }
-
-        // 若有 NPC，順序決定後自動確認
-        if (this.npcId) {
-            const delay = getNpcThinkingDelay(this.npcDifficulty);
-            this.scheduler.setTimeout(() => {
-                if (this.npcId) {
-                    this.confirmOrder(this.npcId);
-                }
-            }, delay);
-        }
+        decideRoomOrder(this);
     }
 
     // 處理玩家確認
     confirmOrder(playerId: string): void {
-        // 確認玩家在房間內
-        if (!this.validatePlayerInRoom(playerId)) {
-            return;
-        }
-
-        if (!this.orderDecisionState.result) {
-            backendLogger.warn(`⚠️ 玩家 ${playerId} 嘗試確認，但順序尚未決定`, {
-                roomId: this.roomId,
-                playerId
-            });
-            this.sendError(playerId, '順序尚未決定，請稍後再確認');
-            return;
-        }
-
-        const update = buildConfirmationUpdate(
-            this.players.map(player => player.playerId),
-            this.orderDecisionState.confirmations,
-            playerId
-        );
-        if (!update.added) {
-            backendLogger.info(`ℹ️ 玩家 ${playerId} 重複確認順序，忽略重送`, {
-                roomId: this.roomId,
-                playerId
-            });
-            return;
-        }
-
-        this.orderDecisionState.confirmations = new Set(update.confirmations);
-        backendLogger.info(`✅ 玩家 ${playerId} 已確認順序`, {
-            roomId: this.roomId,
-            playerId,
-            confirmations: this.orderDecisionState.confirmations.size
-        });
-
-        if (this.gameState) {
-            this.gameState = applyOrderConfirmation(this.gameState, update);
-        }
-
-        // 廣播確認狀態
-        this.broadcast({
-            type: 'ORDER_CONFIRMATION_UPDATE',
-            payload: {
-                confirmations: update.confirmations,
-                waitingFor: update.waitingFor
-            }
-        });
-
-        if (this.gameState) {
-            this.broadcastGameState();
-        }
-
-        // 如果所有玩家都確認了，開始遊戲
-        if (update.confirmations.length === 2) {
-            this.scheduler.setTimeout(() => {
-                this.startReadyCheck();
-            }, 800);
-        }
+        confirmRoomOrder(this, playerId);
     }
 
     // 根據決定的順序開始遊戲
     startGameWithOrder(): void {
-        const playerIds = this.players.map(player => player.playerId);
-        const orderDecisionResult = this.orderDecisionState.result;
-        if (!orderDecisionResult || !canStartGameWithOrder(
-            playerIds,
-            orderDecisionResult,
-            this.orderDecisionState.confirmations,
-            this.readyConfirmations
-        )) {
-            backendLogger.warn(`⚠️ 房間 ${this.roomId} 開局條件尚未完成，拒絕提前發牌`, {
-                roomId: this.roomId,
-                hasOrderResult: Boolean(this.orderDecisionState.result),
-                confirmedOrder: Array.from(this.orderDecisionState.confirmations),
-                confirmedReady: Array.from(this.readyConfirmations)
-            });
-            return;
-        }
-
-        const { order } = orderDecisionResult;
-        if (!this.ensureBaseGeishas()) {
-            return;
-        }
-        this.prepareRoundState({
-            orderedPlayerIds: order,
-            roundNumber: this.gameState?.round ?? 1,
-            openOrderDecision: false
-        });
-        this.lastRoundStarterId = order[0];
-
-        backendLogger.info(`🚀 遊戲開始`, {
-            roomId: this.roomId,
-            geishaSet: this.geishaSet,
-            firstPlayer: order[0],
-            secondPlayer: order[1]
-        });
-
-        // 廣播遊戲開始事件（含可見狀態）
-        this.broadcastGameStateEvent('GAME_STARTED');
-
-        // 確認進入遊戲後再開始發牌動畫
-        if (this.dealSequence.length > 0) {
-            this.players.forEach((player) => {
-                this.sendToPlayer(player.playerId, {
-                    type: 'DEAL_ANIMATION',
-                    payload: {
-                        sequence: this.buildDealSequenceForPlayer(player.playerId)
-                    }
-                });
-            });
-        }
-
-        this.beginTurnForCurrentPlayer();
-
-        // 重置順序決定狀態
-        this.orderDecisionState = createOrderDecisionState();
-        this.readyConfirmations.clear();
+        startRoomGameWithOrder(this);
     }
 
     // 傳送指定事件與可見遊戲狀態（避免資料外洩）
@@ -852,55 +634,7 @@ export class GameRoom implements RestorableRoomLike {
 
     // 開始當前玩家回合（抽牌、重置互動狀態）
     beginTurnForCurrentPlayer(): void {
-        if (!this.gameState) {
-            return;
-        }
-
-        const result = prepareCurrentTurn(this.gameState);
-        this.gameState = result.gameState;
-
-        if (result.outcome.type === 'missing-player') {
-            backendLogger.warn(`⚠️ 房間 ${this.roomId} 找不到當前玩家資料`, {
-                roomId: this.roomId
-            });
-            return;
-        }
-
-        if (result.outcome.type === 'skip-player') {
-            backendLogger.info(`🔄 玩家 ${result.outcome.playerId} 已無可用行動，跳到下一位`, {
-                roomId: this.roomId,
-                playerId: result.outcome.playerId
-            });
-            this.endTurn();
-            return;
-        }
-
-        const currentPlayerId = result.outcome.playerId;
-
-        // 抽牌並依玩家視角廣播
-        if (result.outcome.type === 'drawn-card') {
-            const drawnCard = result.outcome.card;
-            this.players.forEach((player) => {
-                const visibleCard = player.playerId === currentPlayerId
-                    ? drawnCard
-                    : createMaskedCard(`draw-${currentPlayerId}`, 0);
-
-                this.sendToPlayer(player.playerId, {
-                    type: 'CARD_DRAWN',
-                    payload: {
-                        playerId: currentPlayerId,
-                        card: visibleCard
-                    }
-                });
-            });
-        }
-
-        this.broadcastGameState();
-
-        // 若輪到 NPC，安排自動行動
-        if (this.isNpcPlayerId(currentPlayerId)) {
-            this.scheduleNpcTurn();
-        }
+        beginRoomTurnForCurrentPlayer(this);
     }
 
     // 安排 NPC 行動
@@ -930,51 +664,11 @@ export class GameRoom implements RestorableRoomLike {
     }
 
     scheduleNextRound(): void {
-        this.roundResolveTimer = replaceScheduledTimer(this.scheduler, this.roundResolveTimer, () => {
-            this.roundResolveTimer = null;
-            this.startNextRound();
-        }, 2500);
+        scheduleRoomNextRound(this);
     }
 
     resumeRestoredRuntime(): void {
-        if (!this.gameState) {
-            return;
-        }
-
-        if (this.gameState.phase === 'deciding_order') {
-            const result = this.gameState.orderDecision?.result;
-            if (!result) {
-                this.startOrderDecision();
-                return;
-            }
-
-            this.orderDecisionState = {
-                isDeciding: false,
-                result: {
-                    firstPlayer: result.firstPlayer,
-                    secondPlayer: result.secondPlayer,
-                    order: [...result.order]
-                },
-                confirmations: new Set(this.gameState.orderDecision.confirmations ?? [])
-            };
-            if (this.orderDecisionState.confirmations.size >= this.players.length) {
-                this.startReadyCheck();
-            }
-            return;
-        }
-
-        if (this.gameState.phase === 'resolution') {
-            this.scheduleNextRound();
-            return;
-        }
-
-        if (this.gameState.phase === 'playing') {
-            if (canScheduleNpcResponse(this.gameState.pendingInteraction, this.npcId)) {
-                this.scheduleNpcResponse();
-                return;
-            }
-            this.scheduleNpcTurn();
-        }
+        resumeRestoredRoomRuntime(this);
     }
 
     // NPC 執行回合行動
@@ -1007,101 +701,12 @@ export class GameRoom implements RestorableRoomLike {
 
     // 結束回合並切換到下一位可行動玩家
     endTurn(): void {
-        if (!this.gameState) {
-            return;
-        }
-
-        const result = advanceToNextTurn(this.gameState);
-        this.gameState = result.gameState;
-
-        if (result.outcome.type === 'resolve-round') {
-            backendLogger.info(`🧮 房間 ${this.roomId} 所有玩家行動結束，進入結算階段`, {
-                roomId: this.roomId
-            });
-            this.resolveRound();
-            return;
-        }
-
-        this.beginTurnForCurrentPlayer();
+        endRoomTurn(this);
     }
 
     // 結算回合（翻開密約、計算好感、檢查勝利）
     resolveRound(): void {
-        if (!this.gameState) {
-            return;
-        }
-
-        this.gameState.phase = 'resolution';
-
-        this.broadcast({
-            type: 'ROUND_COMPLETE',
-            payload: { round: this.gameState.round }
-        });
-
-        // 翻開密約卡並加入計分區
-        this.gameState.players = revealSecretCards(this.gameState.players);
-
-        // 比較每位藝妓的卡牌數量，更新好感指示物
-        const gameState = this.gameState;
-        const firstPlayer = gameState.players[0];
-        const secondPlayer = gameState.players[1];
-        if (!firstPlayer || !secondPlayer) {
-            return;
-        }
-
-        const resolution = resolveRoundBoard(gameState.geishas, gameState.players);
-        gameState.geishas = resolution.geishas;
-        gameState.players.forEach((player) => {
-            const score = resolution.scores.get(player.id);
-            if (score) {
-                player.score.charm = score.charm;
-                player.score.tokens = score.tokens;
-            }
-        });
-
-        // 廣播結算後狀態，讓前端顯示回合結算結果
-        this.broadcastGameState();
-
-        // 檢查勝利條件
-        const winner = determineWinner(this.gameState.players);
-        if (winner) {
-            this.gameState.phase = 'ended';
-            this.gameState.winner = winner;
-            if (this.gameState.removedCard) {
-                this.gameState.settlement = {
-                    ...(this.gameState.settlement ?? {}),
-                    removedCard: this.gameState.removedCard
-                };
-            }
-            if (!this.currentCompletionId) {
-                this.matchCompletionCounter += 1;
-                this.currentCompletionId = `${this.roomId}:match-${this.matchCompletionCounter}:ended`;
-            }
-            void accountStore.recordMatchCompletion({
-                completionId: this.currentCompletionId,
-                winner,
-                players: this.players.map((player) => ({
-                    playerId: player.playerId,
-                    accountProfile: player.accountProfile
-                }))
-            }).catch((error) => {
-                backendLogger.error('❌ Account counter update failed', {
-                    roomId: this.roomId,
-                    error: error instanceof Error ? error.message : 'unknown'
-                });
-            });
-
-            this.broadcast({
-                type: 'GAME_ENDED',
-                payload: { winner }
-            });
-
-            this.broadcastGameState();
-            return;
-        }
-
-        // 準備下一輪（保留好感指示物）
-        this.scheduleNextRound();
+        resolveRoomRound(this);
     }
 
     // 驗證回合發牌與牌堆分配是否正確（用於偵錯與防呆）
@@ -1144,43 +749,7 @@ export class GameRoom implements RestorableRoomLike {
 
     // 開始下一輪（不再重新決定順序，而是輪流先手）
     startNextRound(): void {
-        if (!this.gameState) {
-            return;
-        }
-
-        const nextOrder = getNextRoundOrder(this.gameState.players, this.lastRoundStarterId);
-        if (nextOrder.length < 2) {
-            backendLogger.warn(`⚠️ 房間 ${this.roomId} 無法開始下一輪（玩家不足）`, {
-                roomId: this.roomId,
-                playerCount: nextOrder.length
-            });
-            return;
-        }
-
-        // 保留好感指示物狀態，供下一輪延續
-        this.baseGeishas = cloneGeishasForNextRound(this.gameState.geishas);
-        this.lastRoundStarterId = nextOrder[0];
-
-        this.prepareRoundState({
-            orderedPlayerIds: nextOrder,
-            roundNumber: this.gameState.round + 1,
-            openOrderDecision: false
-        });
-
-        // 新一輪發牌動畫（依玩家視角遮蔽）
-        if (this.dealSequence.length > 0) {
-            this.players.forEach((player) => {
-                this.sendToPlayer(player.playerId, {
-                    type: 'DEAL_ANIMATION',
-                    payload: {
-                        sequence: this.buildDealSequenceForPlayer(player.playerId)
-                    }
-                });
-            });
-        }
-
-        this.broadcastGameState();
-        this.beginTurnForCurrentPlayer();
+        startRoomNextRound(this);
     }
 
     // 驗證玩家是否存在於房間內
@@ -1219,297 +788,41 @@ export class GameRoom implements RestorableRoomLike {
 
     // 驗證互動狀態（避免同時進行多個互動）
     validatePendingInteraction(actionType: string, playerId: string): boolean {
-        const errorMessage = getPendingInteractionError(this.gameState?.pendingInteraction, actionType);
-        if (errorMessage) {
-            this.sendError(playerId, errorMessage);
-            return false;
-        }
-
-        return true;
+        return validateRoomPendingInteraction(this, actionType, playerId);
     }
 
     // 處理玩家送出的行動（入口）
     handleAction(playerId: string, action: ServerAction): void {
-        if (!this.gameState) {
-            backendLogger.warn(`⚠️ 房間 ${this.roomId} 尚未建立遊戲狀態，無法處理行動`, {
-                roomId: this.roomId,
-                playerId
-            });
-            this.sendError(playerId, '遊戲尚未準備完成');
-            return;
-        }
-
-        if (!this.validatePlayerInRoom(playerId)) {
-            return;
-        }
-
-        const player = this.getPlayerState(playerId);
-        if (!player) {
-            backendLogger.warn(`⚠️ 找不到玩家 ${playerId}，忽略行動`, {
-                roomId: this.roomId,
-                playerId,
-                actionType: action?.type
-            });
-            this.sendError(playerId, '玩家資料不存在');
-            return;
-        }
-
-        if (!this.validatePendingInteraction(action.type, playerId)) {
-            return;
-        }
-
-        if (this.gameState.phase !== 'playing' && !action.type.startsWith('RESOLVE_')) {
-            this.sendError(playerId, '目前無法執行行動');
-            return;
-        }
-
-        switch (action.type) {
-            case 'PLAY_SECRET':
-                if (!this.validatePlayerTurn(playerId) || !this.validateActionAvailable(player, 'secret')) {
-                    return;
-                }
-                this.handlePlaySecret(player, typeof action.payload?.cardId === 'string' ? action.payload.cardId : undefined);
-                break;
-            case 'PLAY_TRADE_OFF':
-                if (!this.validatePlayerTurn(playerId) || !this.validateActionAvailable(player, 'trade-off')) {
-                    return;
-                }
-                this.handleTradeOff(player, toStringArray(action.payload?.cardIds));
-                break;
-            case 'INITIATE_GIFT':
-                if (!this.validatePlayerTurn(playerId) || !this.validateActionAvailable(player, 'gift')) {
-                    return;
-                }
-                this.handleInitiateGift(player, toStringArray(action.payload?.cardIds));
-                break;
-            case 'RESOLVE_GIFT':
-                this.handleResolveGift(playerId, typeof action.payload?.chosenCardId === 'string' ? action.payload.chosenCardId : undefined);
-                break;
-            case 'INITIATE_COMPETITION':
-                if (!this.validatePlayerTurn(playerId) || !this.validateActionAvailable(player, 'competition')) {
-                    return;
-                }
-                this.handleInitiateCompetition(player, toCompetitionGroups(action.payload?.groups));
-                break;
-            case 'RESOLVE_COMPETITION':
-                this.handleResolveCompetition(playerId, typeof action.payload?.chosenGroupIndex === 'number' ? action.payload.chosenGroupIndex : undefined);
-                break;
-            default:
-                backendLogger.warn('⚠️ 未實作的行動類型', {
-                    roomId: this.roomId,
-                    playerId,
-                    actionType: action.type
-                });
-        }
+        handleRoomAction(this, playerId, action);
     }
 
     // 執行密約行動（選 1 張卡蓋牌）
     handlePlaySecret(player: GamePlayer, cardId?: string): void {
-        const result = applySecretAction(player, cardId, this.gameState?.openingDeal);
-        if (!result.ok) {
-            backendLogger.warn('⚠️ PLAY_SECRET 驗證失敗', {
-                roomId: this.roomId,
-                playerId: player.id,
-                error: result.errorMessage
-            });
-            this.sendError(player.id, result.errorMessage);
-            return;
-        }
-
-        const { player: updatedPlayer, openingDeal, revealedCardIds } = result.value;
-        if (this.gameState) {
-            this.gameState.players = this.gameState.players.map(item => item.id === updatedPlayer.id ? updatedPlayer : item);
-            this.gameState.openingDeal = openingDeal;
-            this.gameState.lastAction = { playerId: updatedPlayer.id, action: 'secret' };
-        }
-
-        this.players.forEach((recipient) => {
-            const shouldReveal = recipient.playerId === updatedPlayer.id;
-            this.sendToPlayer(recipient.playerId, {
-                type: 'ACTION_EXECUTED',
-                payload: {
-                    playerId: updatedPlayer.id,
-                    action: 'secret',
-                    cardIds: shouldReveal ? revealedCardIds : []
-                }
-            });
-        });
-
-        this.broadcastGameState();
-        this.endTurn();
+        handleRoomPlaySecret(this, player, cardId);
     }
 
     // 執行取捨行動（選 2 張卡丟棄）
     handleTradeOff(player: GamePlayer, cardIds: string[] = []): void {
-        const result = applyTradeOffAction(player, cardIds, this.gameState?.openingDeal);
-        if (!result.ok) {
-            backendLogger.warn('⚠️ PLAY_TRADE_OFF 驗證失敗', {
-                roomId: this.roomId,
-                playerId: player.id,
-                error: result.errorMessage
-            });
-            this.sendError(player.id, result.errorMessage);
-            return;
-        }
-
-        const { player: updatedPlayer, openingDeal, revealedCardIds } = result.value;
-        if (this.gameState) {
-            this.gameState.players = this.gameState.players.map(item => item.id === updatedPlayer.id ? updatedPlayer : item);
-            this.gameState.openingDeal = openingDeal;
-            this.gameState.lastAction = { playerId: updatedPlayer.id, action: 'trade-off' };
-        }
-
-        this.players.forEach((recipient) => {
-            const shouldReveal = recipient.playerId === updatedPlayer.id;
-            this.sendToPlayer(recipient.playerId, {
-                type: 'ACTION_EXECUTED',
-                payload: {
-                    playerId: updatedPlayer.id,
-                    action: 'trade-off',
-                    cardIds: shouldReveal ? revealedCardIds : []
-                }
-            });
-        });
-
-        this.broadcastGameState();
-        this.endTurn();
+        handleRoomTradeOff(this, player, cardIds);
     }
 
     // 執行贈予行動（選 3 張卡給對手挑）
     handleInitiateGift(player: GamePlayer, cardIds: string[] = []): void {
-        const opponentId = this.getOpponentId(player.id);
-        const result = initiateGiftAction(player, opponentId, cardIds, this.gameState?.openingDeal);
-        if (!result.ok) {
-            backendLogger.warn('⚠️ INITIATE_GIFT 驗證失敗', {
-                roomId: this.roomId,
-                playerId: player.id,
-                error: result.errorMessage
-            });
-            this.sendError(player.id, result.errorMessage);
-            return;
-        }
-
-        if (!this.gameState) {
-            return;
-        }
-        this.gameState.players = this.gameState.players.map(item => item.id === result.value.player.id ? result.value.player : item);
-        this.gameState.openingDeal = result.value.openingDeal;
-        this.gameState.pendingInteraction = result.value.pendingInteraction;
-        this.gameState.lastAction = { playerId: result.value.player.id, action: 'gift' };
-
-        this.sendPendingInteractionState();
-
-        this.broadcastGameState();
-
-        // 若目標是 NPC，安排自動回應
-        if (this.isNpcPlayerId(result.value.pendingInteraction.targetPlayerId)) {
-            this.scheduleNpcResponse();
-        }
+        handleRoomInitiateGift(this, player, cardIds);
     }
 
     // 處理對手回應贈予（選 1 張卡）
     handleResolveGift(playerId: string, chosenCardId?: string): void {
-        const result = resolveGiftAction(
-            this.gameState?.players ?? [],
-            this.gameState?.pendingInteraction,
-            playerId,
-            chosenCardId
-        );
-        if (!result.ok) {
-            backendLogger.warn('⚠️ RESOLVE_GIFT 驗證失敗', {
-                roomId: this.roomId,
-                playerId,
-                error: result.errorMessage
-            });
-            this.sendError(playerId, result.errorMessage);
-            return;
-        }
-
-        if (this.gameState) {
-            this.gameState.players = result.value.players;
-            this.gameState.pendingInteraction = result.value.pendingInteraction;
-        }
-
-        this.broadcast({
-            type: 'INTERACTION_RESOLVED',
-            payload: {
-                interaction: 'GIFT_SELECTION',
-                initiatorId: result.value.initiatorId,
-                targetPlayerId: result.value.targetPlayerId,
-                chosenCardId: result.value.chosenCardId
-            }
-        });
-
-        this.broadcastGameState();
-        this.endTurn();
+        handleRoomResolveGift(this, playerId, chosenCardId);
     }
 
     // 執行競爭行動（選 4 張卡分 2 組）
     handleInitiateCompetition(player: GamePlayer, groups: string[][] = []): void {
-        const opponentId = this.getOpponentId(player.id);
-        const result = initiateCompetitionAction(player, opponentId, groups, this.gameState?.openingDeal);
-        if (!result.ok) {
-            backendLogger.warn('⚠️ INITIATE_COMPETITION 驗證失敗', {
-                roomId: this.roomId,
-                playerId: player.id,
-                error: result.errorMessage
-            });
-            this.sendError(player.id, result.errorMessage);
-            return;
-        }
-
-        if (!this.gameState) {
-            return;
-        }
-        this.gameState.players = this.gameState.players.map(item => item.id === result.value.player.id ? result.value.player : item);
-        this.gameState.openingDeal = result.value.openingDeal;
-        this.gameState.pendingInteraction = result.value.pendingInteraction;
-        this.gameState.lastAction = { playerId: result.value.player.id, action: 'competition' };
-
-        this.sendPendingInteractionState();
-
-        this.broadcastGameState();
-
-        // 若目標是 NPC，安排自動回應
-        if (this.isNpcPlayerId(result.value.pendingInteraction.targetPlayerId)) {
-            this.scheduleNpcResponse();
-        }
+        handleRoomInitiateCompetition(this, player, groups);
     }
 
     // 處理對手回應競爭（選 1 組）
     handleResolveCompetition(playerId: string, chosenGroupIndex?: number): void {
-        const result = resolveCompetitionAction(
-            this.gameState?.players ?? [],
-            this.gameState?.pendingInteraction,
-            playerId,
-            chosenGroupIndex
-        );
-        if (!result.ok) {
-            backendLogger.warn('⚠️ RESOLVE_COMPETITION 驗證失敗', {
-                roomId: this.roomId,
-                playerId,
-                error: result.errorMessage
-            });
-            this.sendError(playerId, result.errorMessage);
-            return;
-        }
-
-        if (this.gameState) {
-            this.gameState.players = result.value.players;
-            this.gameState.pendingInteraction = result.value.pendingInteraction;
-        }
-
-        this.broadcast({
-            type: 'INTERACTION_RESOLVED',
-            payload: {
-                interaction: 'COMPETITION_SELECTION',
-                initiatorId: result.value.initiatorId,
-                targetPlayerId: result.value.targetPlayerId,
-                chosenGroupIndex: result.value.chosenGroupIndex
-            }
-        });
-
-        this.broadcastGameState();
-        this.endTurn();
+        handleRoomResolveCompetition(this, playerId, chosenGroupIndex);
     }
 }
