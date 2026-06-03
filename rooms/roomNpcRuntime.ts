@@ -14,6 +14,7 @@ import {
 } from '../npc/npcResponseStrategy.js';
 import type { ServerAction } from '../game/actionValidation.js';
 import type { ServerGameState } from '../game/serverGameStateTypes.js';
+import { backendLogger } from '../utils/runtimeLogger.js';
 import {
     createNpcSocket,
     type RoomSeat
@@ -59,6 +60,33 @@ export const buildNpcSeat = (difficulty: unknown = 'easy'): NpcSeatUpdate => {
             accountProfile: undefined
         }
     };
+};
+
+export const addRoomNpcSeat = (
+    room: {
+        roomId: string;
+        players: RoomSeat[];
+        maxPlayers: number;
+        npcId: string | null;
+        npcDifficulty: NpcDifficulty | null;
+    },
+    difficulty: unknown = 'easy'
+): string | null => {
+    if (room.npcId || room.players.length >= room.maxPlayers) {
+        return null;
+    }
+
+    const update = buildNpcSeat(difficulty);
+    room.players.push(update.seat);
+    room.npcId = update.npcId;
+    room.npcDifficulty = update.difficulty;
+
+    backendLogger.info(`🤖 NPC 玩家加入房間 ${room.roomId}`, {
+        roomId: room.roomId,
+        npcId: update.npcId,
+        difficulty: update.difficulty
+    });
+    return update.npcId;
 };
 
 export const canScheduleNpcTurn = (

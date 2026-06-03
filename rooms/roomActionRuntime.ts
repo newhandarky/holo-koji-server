@@ -18,6 +18,11 @@ import {
     resolveGiftAction
 } from '../game/interactionActionTransitions.js';
 import type { WireMessage } from './roomMessaging.js';
+import {
+    validateRoomActionAvailable,
+    validateRoomPlayerInRoom,
+    validateRoomPlayerTurn
+} from './roomActionGuards.js';
 
 type GamePlayer = ServerGameState['players'][number];
 
@@ -27,9 +32,6 @@ export type RoomActionRuntime = {
     players: Array<{ playerId: string }>;
     sendToPlayer: (playerId: string, message: WireMessage) => void;
     sendError: (playerId: string, message: string, code?: string) => void;
-    validatePlayerInRoom: (playerId: string) => boolean;
-    validatePlayerTurn: (playerId: string) => boolean;
-    validateActionAvailable: (player: GamePlayer, actionType: ActionType) => boolean;
     getPlayerState: (playerId: string) => GamePlayer | null;
     getOpponentId: (playerId: string) => string | null;
     sendPendingInteractionState: () => void;
@@ -68,7 +70,7 @@ export const handleRoomAction = (
         return;
     }
 
-    if (!room.validatePlayerInRoom(playerId)) {
+    if (!validateRoomPlayerInRoom(room, playerId)) {
         return;
     }
 
@@ -94,19 +96,19 @@ export const handleRoomAction = (
 
     switch (action.type) {
         case 'PLAY_SECRET':
-            if (!room.validatePlayerTurn(playerId) || !room.validateActionAvailable(player, 'secret')) {
+            if (!validateRoomPlayerTurn(room, playerId) || !validateRoomActionAvailable(room, player, 'secret')) {
                 return;
             }
             handleRoomPlaySecret(room, player, typeof action.payload?.cardId === 'string' ? action.payload.cardId : undefined);
             break;
         case 'PLAY_TRADE_OFF':
-            if (!room.validatePlayerTurn(playerId) || !room.validateActionAvailable(player, 'trade-off')) {
+            if (!validateRoomPlayerTurn(room, playerId) || !validateRoomActionAvailable(room, player, 'trade-off')) {
                 return;
             }
             handleRoomTradeOff(room, player, toStringArray(action.payload?.cardIds));
             break;
         case 'INITIATE_GIFT':
-            if (!room.validatePlayerTurn(playerId) || !room.validateActionAvailable(player, 'gift')) {
+            if (!validateRoomPlayerTurn(room, playerId) || !validateRoomActionAvailable(room, player, 'gift')) {
                 return;
             }
             handleRoomInitiateGift(room, player, toStringArray(action.payload?.cardIds));
@@ -115,7 +117,7 @@ export const handleRoomAction = (
             handleRoomResolveGift(room, playerId, typeof action.payload?.chosenCardId === 'string' ? action.payload.chosenCardId : undefined);
             break;
         case 'INITIATE_COMPETITION':
-            if (!room.validatePlayerTurn(playerId) || !room.validateActionAvailable(player, 'competition')) {
+            if (!validateRoomPlayerTurn(room, playerId) || !validateRoomActionAvailable(room, player, 'competition')) {
                 return;
             }
             handleRoomInitiateCompetition(room, player, toCompetitionGroups(action.payload?.groups));

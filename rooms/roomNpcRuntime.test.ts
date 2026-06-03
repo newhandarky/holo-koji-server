@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import type { ServerGameState } from '../game/serverGameStateTypes.js';
 import {
+    addRoomNpcSeat,
     buildNpcResponseAction,
     buildNpcSeat,
     buildNpcTurnAction,
@@ -14,6 +15,10 @@ import {
     scheduleRoomNpcTurn
 } from './roomNpcRuntime.js';
 import type { TimerHandle } from './roomScheduler.js';
+import {
+    createDisconnectedSocket,
+    type RoomSeat
+} from '../utils/roomSession.js';
 
 const makeState = (): ServerGameState => ({
     players: [
@@ -51,6 +56,37 @@ test('buildNpcSeat normalizes difficulty and creates an open fake socket', () =>
     assert.equal(easy.seat.ws.readyState, 1);
     assert.equal(expert.difficulty, 'expert');
     assert.equal(expert.seat.name, expert.npcId);
+});
+
+test('addRoomNpcSeat adds one npc seat and preserves duplicate/full guards', () => {
+    const room = {
+        roomId: 'npc-seat-runtime',
+        players: [{ playerId: 'host', ws: createDisconnectedSocket() }] as RoomSeat[],
+        maxPlayers: 2,
+        npcId: null as string | null,
+        npcDifficulty: null as 'easy' | 'hard' | null
+    };
+
+    const npcId = addRoomNpcSeat(room, 'hard');
+
+    assert.equal(npcId, '兎田ぺこら');
+    assert.equal(room.npcId, '兎田ぺこら');
+    assert.equal(room.npcDifficulty, 'hard');
+    assert.equal(room.players.length, 2);
+    assert.equal(room.players[1]?.isNpc, true);
+    assert.equal(addRoomNpcSeat(room, 'expert'), null);
+
+    const fullRoom = {
+        roomId: 'npc-full-runtime',
+        players: [
+            { playerId: 'host', ws: createDisconnectedSocket() },
+            { playerId: 'guest', ws: createDisconnectedSocket() }
+        ] as RoomSeat[],
+        maxPlayers: 2,
+        npcId: null as string | null,
+        npcDifficulty: null as 'easy' | 'hard' | null
+    };
+    assert.equal(addRoomNpcSeat(fullRoom, 'hard'), null);
 });
 
 test('canScheduleNpcTurn enforces player, phase and pending interaction gates', () => {
