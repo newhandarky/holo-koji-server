@@ -1,11 +1,8 @@
 import type { Geisha, ItemCard } from '@newhandarky/hanakoji-game-types';
-import {
-    buildDeckForGeishas,
-    buildOpeningDealSummary,
-    cloneGeishas,
-    createPlayer,
-    type RandomSource
-} from './gameStateFactory.js';
+import { buildDeckForGeishas, buildOpeningDealSummary } from './deckOpeningFactory.js';
+import { cloneGeishas } from './geishaBoardFactory.js';
+import type { RandomSource } from './gameRandomSource.js';
+import { createPlayer } from './serverGameStateFactory.js';
 import type {
     PlayerMetaMap,
     ServerGameState

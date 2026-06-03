@@ -1,8 +1,6 @@
 import type { Geisha, GeishaSet } from '@newhandarky/hanakoji-game-types';
-import {
-    cloneGeishas,
-    createWaitingGameState
-} from './gameStateFactory.js';
+import { cloneGeishas } from './geishaBoardFactory.js';
+import { createWaitingGameState } from './serverGameStateFactory.js';
 import type {
     PlayerMetaMap,
     ServerGameState

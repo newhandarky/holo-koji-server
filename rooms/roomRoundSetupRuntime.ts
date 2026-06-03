@@ -8,7 +8,7 @@ import { DEFAULT_GEISHA_SET } from '../game/geishaSetRules.js';
 import {
     createCustomSelectedGeishas,
     createRandomizedGeishas
-} from '../game/gameStateFactory.js';
+} from '../game/geishaBoardFactory.js';
 import type {
     PlayerMetaMap,
     ServerGameState
