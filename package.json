@@ -12,6 +12,7 @@
     "build": "tsc -p tsconfig.json",
     "postinstall": "npm run build",
     "test": "npm run build && node --test dist/http/*.test.js dist/utils/*.test.js dist/npc/*.test.js dist/game/*.test.js dist/rooms/*.test.js dist/ws/*.test.js",
+    "verify:deploy": "npm run build && npm test && npm ci --omit=dev --dry-run && node -e \"require('node:fs').accessSync('dist/index.js')\" && node --check dist/index.js",
     "start": "node dist/index.js",
     "dev": "npm run build && node dist/index.js",
     "dev:watch": "nodemon --watch . --ext ts --exec \"npm run dev\""
