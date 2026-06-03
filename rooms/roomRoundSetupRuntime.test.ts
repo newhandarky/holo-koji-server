@@ -8,7 +8,7 @@ import type {
 } from '@newhandarky/hanakoji-game-types';
 import {
     DEFAULT_GEISHA_SET,
-} from '../game/geishaSetRules.js';
+} from '../game/geishaSetCatalog.js';
 import { createRandomizedGeishas } from '../game/geishaBoardFactory.js';
 import type {
     PlayerMetaMap,

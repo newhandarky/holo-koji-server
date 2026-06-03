@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import type { Geisha } from '@newhandarky/hanakoji-game-types';
-import { hololiveCharacterPool } from './geishaSetRules.js';
+import { hololiveCharacterPool } from './geishaSetCatalog.js';
 import { createDeterministicRandomSource } from './gameRandomSource.js';
 import {
     cloneGeishas,

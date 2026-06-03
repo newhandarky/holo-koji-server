@@ -3,11 +3,11 @@ import type {
     GeishaSet,
     Player
 } from '@newhandarky/hanakoji-game-types';
+import { DEFAULT_GEISHA_SET } from './geishaSetCatalog.js';
 import {
-    DEFAULT_GEISHA_SET,
     isSupportedGeishaSet,
     normalizeGeishaSet
-} from './geishaSetRules.js';
+} from './geishaSetupRules.js';
 import type { PlayerMeta, PlayerMetaMap, ServerGameState } from './serverGameStateTypes.js';
 import {
     cloneGeishas,

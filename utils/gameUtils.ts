@@ -1,28 +1,35 @@
 export {
     charmPointsDistribution,
-    DEFAULT_GEISHA_SET,
-    SUPPORTED_GEISHA_SETS,
-    ROOM_SETUP_MODES,
-    DEFAULT_ROOM_SETUP_MODE,
-    CUSTOM_SELECTION_SIZE,
     characterPoolsBySet,
-    ginzaCharacterPool,
     collaborationCharacterPool,
-    hololiveCharacterPool,
+    CUSTOM_SELECTION_SIZE,
+    DEFAULT_GEISHA_SET,
+    DEFAULT_ROOM_SETUP_MODE,
     geishaSetMetadata,
     ginzaBoardSlotDefinitions,
-    normalizeGeishaSet,
-    isSupportedGeishaSet,
-    normalizeRoomSetupMode,
+    ginzaCharacterPool,
+    hololiveCharacterPool,
+    resolveAssetUrl,
+    ROOM_SETUP_MODES,
+    SUPPORTED_GEISHA_SETS
+} from '../game/geishaSetCatalog.js';
+
+export {
     getCharacterPoolForSet,
+    isSupportedGeishaSet,
+    normalizeGeishaSet,
+    normalizeRoomSetupMode,
+    validateCharacterSetData,
     validateCustomCharacterSelection,
+    validateGinzaSetupData
+} from '../game/geishaSetupRules.js';
+
+export {
     resolveRestorableGeishaSet,
     validateMatchBoardForSet,
     validateMatchBoardForCustomSelection,
-    resolveRestorableBoardForSet,
-    validateCharacterSetData,
-    validateGinzaSetupData
-} from '../game/geishaSetRules.js';
+    resolveRestorableBoardForSet
+} from '../game/geishaBoardRestoreRules.js';
 
 export {
     cloneGeishas,

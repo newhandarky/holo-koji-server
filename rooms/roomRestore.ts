@@ -4,12 +4,12 @@ import type {
     GeishaSet,
     RoomSetupMode
 } from '@newhandarky/hanakoji-game-types';
+import { DEFAULT_GEISHA_SET } from '../game/geishaSetCatalog.js';
+import { normalizeRoomSetupMode } from '../game/geishaSetupRules.js';
 import {
-    DEFAULT_GEISHA_SET,
-    normalizeRoomSetupMode,
     resolveRestorableBoardForSet,
     resolveRestorableGeishaSet
-} from '../game/geishaSetRules.js';
+} from '../game/geishaBoardRestoreRules.js';
 import type { ServerGameState } from '../game/serverGameStateTypes.js';
 import {
     buildRestoredRoomSeats,

@@ -5,15 +5,17 @@ import type {
 } from '@newhandarky/hanakoji-game-types';
 import {
     DEFAULT_GEISHA_SET,
-    getCharacterPoolForSet,
     ginzaBoardSlotDefinitions,
+    resolveAssetUrl
+} from './geishaSetCatalog.js';
+import type { BoardSlotDefinition } from './geishaSetCatalog.js';
+import {
+    getCharacterPoolForSet,
     normalizeGeishaSet,
-    resolveAssetUrl,
     validateCharacterSetData,
     validateCustomCharacterSelection,
     validateGinzaSetupData
-} from './geishaSetRules.js';
-import type { BoardSlotDefinition } from './geishaSetRules.js';
+} from './geishaSetupRules.js';
 import {
     defaultRandomSource,
     shuffleArray,

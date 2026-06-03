@@ -9,7 +9,7 @@ import type {
 import {
     DEFAULT_GEISHA_SET,
     DEFAULT_ROOM_SETUP_MODE
-} from '../game/geishaSetRules.js';
+} from '../game/geishaSetCatalog.js';
 import type {
     PlayerMetaMap,
     ServerGameState

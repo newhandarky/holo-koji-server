@@ -4,7 +4,7 @@ import type {
     PendingInteraction,
     Player
 } from '@newhandarky/hanakoji-game-types';
-import { DEFAULT_GEISHA_SET } from './geishaSetRules.js';
+import { DEFAULT_GEISHA_SET } from './geishaSetCatalog.js';
 import type { ServerGameState } from './serverGameStateTypes.js';
 
 export interface VisibleStateOptions {
