@@ -21,8 +21,7 @@
     "npc/**/*.ts",
     "rooms/**/*.ts",
     "ws/**/*.ts",
-    "utils/**/*.ts",
-    "types/**/*.d.ts"
+    "utils/**/*.ts"
   ],
   "exclude": [
     "dist",
