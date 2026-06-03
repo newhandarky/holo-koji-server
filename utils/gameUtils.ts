@@ -25,20 +25,29 @@ export {
 } from '../game/geishaSetRules.js';
 
 export {
-    buildDeckForGeishas,
-    buildOpeningDealSummary,
     cloneGeishas,
     cloneGeishasForNextRound,
     createBaseGeishas,
     createCustomSelectedGeishas,
+    createRandomizedGeishas,
+} from '../game/geishaBoardFactory.js';
+
+export {
+    buildDeckForGeishas,
+    buildOpeningDealSummary,
+    markOpeningDealNotReplayable,
+} from '../game/deckOpeningFactory.js';
+
+export {
     createDeterministicRandomSource,
+    type RandomSource
+} from '../game/gameRandomSource.js';
+
+export {
     createGameStateWithOrder,
     createPlayer,
-    createRandomizedGeishas,
-    createWaitingGameState,
-    markOpeningDealNotReplayable,
-    type RandomSource
-} from '../game/gameStateFactory.js';
+    createWaitingGameState
+} from '../game/serverGameStateFactory.js';
 
 export {
     buildPlayerVisibleGameState,

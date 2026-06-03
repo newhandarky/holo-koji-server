@@ -1,7 +1,7 @@
 // src/reducers/gameReducer.ts
 import type { GameState, GameAction, Geisha } from "@newhandarky/hanakoji-game-types"
-// 後端統一由 game state factory 建立藝妓資料
-import { createRandomizedGeishas } from '../game/gameStateFactory';
+// 後端統一由 geisha board factory 建立藝妓資料
+import { createRandomizedGeishas } from '../game/geishaBoardFactory';
 import { backendLogger } from '../utils/runtimeLogger.js';
 
 // 初始藝妓資料（隨機順序）

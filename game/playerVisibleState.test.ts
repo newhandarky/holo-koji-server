@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import type { ItemCard } from '@newhandarky/hanakoji-game-types';
-import { createPlayer } from './gameStateFactory.js';
+import { createPlayer } from './serverGameStateFactory.js';
 import {
     buildPlayerVisibleGameState,
     createHiddenCards,

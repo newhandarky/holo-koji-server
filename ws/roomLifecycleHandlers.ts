@@ -4,7 +4,7 @@ import type {
     GeishaSet,
     JoinRoomPayload
 } from '@newhandarky/hanakoji-game-types';
-import { createWaitingGameState } from '../game/gameStateFactory.js';
+import { createWaitingGameState } from '../game/serverGameStateFactory.js';
 import {
     DEFAULT_ROOM_SETUP_MODE,
     isSupportedGeishaSet,
