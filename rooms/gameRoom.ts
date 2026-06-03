@@ -21,7 +21,6 @@ import {
     type OrderDecisionState
 } from '../game/openingFlow.js';
 import {
-    getActionAvailabilityError,
     type ServerAction
 } from '../game/actionValidation.js';
 import { type RestorableRoomLike } from './roomRestore.js';
@@ -112,6 +111,11 @@ import {
     getRoomPlayerState,
     isRoomNpcPlayerId
 } from './roomStateRuntime.js';
+import {
+    validateRoomActionAvailable,
+    validateRoomPlayerInRoom,
+    validateRoomPlayerTurn
+} from './roomActionGuards.js';
 
 type GameRoomPlayer = RoomSeat & {
     sessionToken?: string;
@@ -405,36 +409,17 @@ export class GameRoom implements RestorableRoomLike {
 
     // 驗證玩家是否存在於房間內
     validatePlayerInRoom(playerId: string): boolean {
-        if (!this.players.some(player => player.playerId === playerId)) {
-            this.sendError(playerId, '玩家不在房間內');
-            return false;
-        }
-        return true;
+        return validateRoomPlayerInRoom(this, playerId);
     }
 
     // 驗證是否輪到該玩家行動
     validatePlayerTurn(playerId: string): boolean {
-        if (!this.gameState) {
-            this.sendError(playerId, '遊戲尚未開始');
-            return false;
-        }
-
-        const currentPlayer = this.gameState.players[this.gameState.currentPlayer];
-        if (!currentPlayer || currentPlayer.id !== playerId) {
-            this.sendError(playerId, '不是你的回合');
-            return false;
-        }
-        return true;
+        return validateRoomPlayerTurn(this, playerId);
     }
 
     // 驗證玩家行動指示物是否可用
     validateActionAvailable(player: GamePlayer, actionType: ActionType): boolean {
-        const errorMessage = getActionAvailabilityError(player, actionType);
-        if (errorMessage) {
-            this.sendError(player.id, errorMessage);
-            return false;
-        }
-        return true;
+        return validateRoomActionAvailable(this, player, actionType);
     }
 
     // 驗證互動狀態（避免同時進行多個互動）
