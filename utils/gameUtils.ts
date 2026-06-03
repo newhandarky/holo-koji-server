@@ -29,7 +29,7 @@ export {
     validateMatchBoardForSet,
     validateMatchBoardForCustomSelection,
     resolveRestorableBoardForSet
-} from '../game/geishaSetRules.js';
+} from '../game/geishaBoardRestoreRules.js';
 
 export {
     cloneGeishas,

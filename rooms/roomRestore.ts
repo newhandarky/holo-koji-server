@@ -9,7 +9,7 @@ import { normalizeRoomSetupMode } from '../game/geishaSetupRules.js';
 import {
     resolveRestorableBoardForSet,
     resolveRestorableGeishaSet
-} from '../game/geishaSetRules.js';
+} from '../game/geishaBoardRestoreRules.js';
 import type { ServerGameState } from '../game/serverGameStateTypes.js';
 import {
     buildRestoredRoomSeats,
