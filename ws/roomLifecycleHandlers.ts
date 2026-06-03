@@ -1,16 +1,6 @@
 import type { WebSocket } from 'ws';
-import type {
-    CreateRoomPayload,
-    GeishaSet,
-    JoinRoomPayload
-} from '@newhandarky/hanakoji-game-types';
+import type { GeishaSet } from '@newhandarky/hanakoji-game-types';
 import { createWaitingGameState } from '../game/serverGameStateFactory.js';
-import { DEFAULT_ROOM_SETUP_MODE } from '../game/geishaSetCatalog.js';
-import {
-    isSupportedGeishaSet,
-    normalizeGeishaSet,
-    normalizeRoomSetupMode
-} from '../game/geishaSetupRules.js';
 import type { RestorableRoomSnapshot } from '../rooms/roomRestore.js';
 import {
     normalizeCustomSelection,
@@ -19,41 +9,28 @@ import {
 import {
     CUSTOM_SELECTION_ERROR_MESSAGE,
     GEISHA_SET_CONFIG_ERROR_MESSAGE,
-    LEGACY_GEISHA_SET_ERROR_MESSAGE,
     PLAYER_ID_TAKEN_ERROR_MESSAGE
 } from '../rooms/roomErrors.js';
-import type { PlayerMetaPayload } from '../rooms/roomMembership.js';
 import { roomScheduler } from '../rooms/roomScheduler.js';
-import { normalizeNpcDifficulty } from '../npc/npcConfig.js';
 import { backendLogger } from '../utils/runtimeLogger.js';
 import type { WebSocketConnectionContext } from './connectionContext.js';
 import type {
     RoomLifecycleHandlerDependencies,
     RoomLifecycleHandlerLike
 } from './roomHandlerTypes.js';
-
-type JsonObject = Record<string, unknown>;
-
-const isRecord = (value: unknown): value is JsonObject => (
-    Boolean(value) && typeof value === 'object' && !Array.isArray(value)
-);
+import {
+    parseCreateRoomPayload,
+    parseJoinRoomPayload
+} from './roomLifecyclePayloads.js';
+import {
+    rejectAttachedConnection,
+    sendGameStateUpdated,
+    sendLifecycleError,
+    sendPlayerJoined,
+    sendRoomCreated
+} from './roomLifecycleResponses.js';
 
 const generateRoomId = (): string => Math.random().toString(36).substring(2, 8).toUpperCase();
-
-const rejectAttachedConnection = (
-    ws: WebSocket,
-    context: WebSocketConnectionContext
-): boolean => {
-    if (!context.currentRoomId || !context.currentPlayerId) {
-        return false;
-    }
-
-    ws.send(JSON.stringify({
-        type: 'ERROR',
-        payload: { message: '目前已在房間內', code: 'ALREADY_IN_ROOM' }
-    }));
-    return true;
-};
 
 export const handleCreateRoom = async <TRoom extends RoomLifecycleHandlerLike>(
     ws: WebSocket,
@@ -64,30 +41,24 @@ export const handleCreateRoom = async <TRoom extends RoomLifecycleHandlerLike>(
     if (rejectAttachedConnection(ws, context)) {
         return;
     }
-    if (!isRecord(payload) || typeof payload.playerId !== 'string' || !payload.playerId) {
-        ws.send(JSON.stringify({ type: 'ERROR', payload: { message: '缺少 playerId' } }));
+    const parsedPayload = parseCreateRoomPayload(payload);
+    if (!parsedPayload.ok) {
+        sendLifecycleError(ws, parsedPayload.error.message, parsedPayload.error.code);
         return;
     }
-    const createPayload = payload as Partial<CreateRoomPayload> & PlayerMetaPayload;
-    const mode = createPayload.mode === 'npc' ? 'npc' : 'online';
-    const aiDifficulty = normalizeNpcDifficulty(createPayload.aiDifficulty ?? 'easy');
-    const requestedGeishaSet = normalizeGeishaSet(createPayload.geishaSet);
-    let setupMode = DEFAULT_ROOM_SETUP_MODE;
-    if (!isSupportedGeishaSet(requestedGeishaSet)) {
-        ws.send(JSON.stringify({ type: 'ERROR', payload: { message: LEGACY_GEISHA_SET_ERROR_MESSAGE } }));
-        return;
-    }
-    try {
-        setupMode = normalizeRoomSetupMode(createPayload.setupMode);
-    } catch (_error) {
-        ws.send(JSON.stringify({ type: 'ERROR', payload: { message: CUSTOM_SELECTION_ERROR_MESSAGE } }));
-        return;
-    }
+    const {
+        rawPayload: createPayload,
+        playerId,
+        mode,
+        aiDifficulty,
+        requestedGeishaSet,
+        setupMode
+    } = parsedPayload.value;
 
     const roomId = generateRoomId();
     const room = deps.createRoom(roomId);
     deps.rooms.set(roomId, room);
-    context.currentPlayerId = payload.playerId;
+    context.currentPlayerId = playerId;
     context.currentRoomId = roomId;
     room.hostId = context.currentPlayerId;
     room.geishaSet = requestedGeishaSet as GeishaSet;
@@ -97,10 +68,7 @@ export const handleCreateRoom = async <TRoom extends RoomLifecycleHandlerLike>(
         deps.rooms.delete(roomId);
         context.currentRoomId = null;
         context.currentPlayerId = null;
-        ws.send(JSON.stringify({
-            type: 'ERROR',
-            payload: { message: setupMode === 'custom' ? CUSTOM_SELECTION_ERROR_MESSAGE : GEISHA_SET_CONFIG_ERROR_MESSAGE }
-        }));
+        sendLifecycleError(ws, setupMode === 'custom' ? CUSTOM_SELECTION_ERROR_MESSAGE : GEISHA_SET_CONFIG_ERROR_MESSAGE);
         return;
     }
     room.customSelection = setupMode === 'custom' ? normalizeCustomSelection(room.customSelection) : null;
@@ -108,7 +76,7 @@ export const handleCreateRoom = async <TRoom extends RoomLifecycleHandlerLike>(
         deps.rooms.delete(roomId);
         context.currentRoomId = null;
         context.currentPlayerId = null;
-        ws.send(JSON.stringify({ type: 'ERROR', payload: { message: CUSTOM_SELECTION_ERROR_MESSAGE } }));
+        sendLifecycleError(ws, CUSTOM_SELECTION_ERROR_MESSAGE);
         return;
     }
 
@@ -125,14 +93,11 @@ export const handleCreateRoom = async <TRoom extends RoomLifecycleHandlerLike>(
         setupMode,
         origin: context.origin
     });
-    ws.send(JSON.stringify({
-        type: 'ROOM_CREATED',
-        payload: { roomId, playerId: context.currentPlayerId, roomSessionToken: hostSeat?.sessionToken }
-    }));
+    sendRoomCreated(ws, roomId, context.currentPlayerId, hostSeat?.sessionToken);
 
     const baseGeishas = room.baseGeishas;
     if (!baseGeishas) {
-        ws.send(JSON.stringify({ type: 'ERROR', payload: { message: GEISHA_SET_CONFIG_ERROR_MESSAGE } }));
+        sendLifecycleError(ws, GEISHA_SET_CONFIG_ERROR_MESSAGE);
         return;
     }
     const initialGameState = createWaitingGameState(
@@ -164,12 +129,16 @@ export const handleJoinRoom = async <TRoom extends RoomLifecycleHandlerLike>(
     if (rejectAttachedConnection(ws, context)) {
         return;
     }
-    if (!isRecord(payload) || typeof payload.roomId !== 'string' || typeof payload.playerId !== 'string' || !payload.roomId || !payload.playerId) {
-        ws.send(JSON.stringify({ type: 'ERROR', payload: { message: '缺少 roomId 或 playerId', code: 'INVALID_JOIN_REQUEST' } }));
+    const parsedPayload = parseJoinRoomPayload(payload);
+    if (!parsedPayload.ok) {
+        sendLifecycleError(ws, parsedPayload.error.message, parsedPayload.error.code);
         return;
     }
-    const joinPayload = payload as Partial<JoinRoomPayload> & PlayerMetaPayload;
-    const { roomId, playerId } = payload;
+    const {
+        rawPayload: joinPayload,
+        roomId,
+        playerId
+    } = parsedPayload.value;
     let room = deps.rooms.get(roomId);
     if (!room) {
         const snapshot = await deps.loadRoomSnapshot<RestorableRoomSnapshot>(roomId);
@@ -181,22 +150,22 @@ export const handleJoinRoom = async <TRoom extends RoomLifecycleHandlerLike>(
             if (room) {
                 deps.rooms.set(roomId, room);
             } else if (restoreResult.errorMessage) {
-                ws.send(JSON.stringify({ type: 'ERROR', payload: { message: restoreResult.errorMessage, code: 'ROOM_RESTORE_FAILED' } }));
+                sendLifecycleError(ws, restoreResult.errorMessage, 'ROOM_RESTORE_FAILED');
                 return;
             }
         }
     }
     if (!room) {
-        ws.send(JSON.stringify({ type: 'ERROR', payload: { message: '房間不存在', code: 'ROOM_NOT_FOUND' } }));
+        sendLifecycleError(ws, '房間不存在', 'ROOM_NOT_FOUND');
         return;
     }
     if (!room.ensureBaseGeishas()) {
-        ws.send(JSON.stringify({ type: 'ERROR', payload: { message: GEISHA_SET_CONFIG_ERROR_MESSAGE, code: 'ROOM_CONFIG_INVALID' } }));
+        sendLifecycleError(ws, GEISHA_SET_CONFIG_ERROR_MESSAGE, 'ROOM_CONFIG_INVALID');
         return;
     }
     const isExistingPlayer = room.players.some(player => player.playerId === playerId);
     if (!isExistingPlayer && room.gameState?.phase && room.gameState.phase !== 'waiting') {
-        ws.send(JSON.stringify({ type: 'ERROR', payload: { message: '房間已開始對局', code: 'ROOM_ALREADY_STARTED' } }));
+        sendLifecycleError(ws, '房間已開始對局', 'ROOM_ALREADY_STARTED');
         return;
     }
     const result = room.addPlayer(playerId, ws, {
@@ -205,11 +174,11 @@ export const handleJoinRoom = async <TRoom extends RoomLifecycleHandlerLike>(
         accountProfile: context.currentAccountProfile
     });
     if (result === 'session-mismatch') {
-        ws.send(JSON.stringify({ type: 'ERROR', payload: { message: PLAYER_ID_TAKEN_ERROR_MESSAGE, code: 'PLAYER_ID_TAKEN' } }));
+        sendLifecycleError(ws, PLAYER_ID_TAKEN_ERROR_MESSAGE, 'PLAYER_ID_TAKEN');
         return;
     }
     if (result === 'full') {
-        ws.send(JSON.stringify({ type: 'ERROR', payload: { message: '房間已滿', code: 'ROOM_FULL' } }));
+        sendLifecycleError(ws, '房間已滿', 'ROOM_FULL');
         return;
     }
 
@@ -218,7 +187,7 @@ export const handleJoinRoom = async <TRoom extends RoomLifecycleHandlerLike>(
     if (result === 'existing') {
         backendLogger.info(`♻️ 玩家 ${playerId} 已在房間 ${roomId}，同步當前狀態`, { roomId, playerId });
         if (room.gameState) {
-            ws.send(JSON.stringify({ type: 'GAME_STATE_UPDATED', payload: room.buildClientGameState(playerId) }));
+            sendGameStateUpdated(ws, room.buildClientGameState(playerId));
         }
         return;
     }
@@ -228,14 +197,11 @@ export const handleJoinRoom = async <TRoom extends RoomLifecycleHandlerLike>(
         geishaSet: room.geishaSet,
         origin: context.origin
     });
-    ws.send(JSON.stringify({
-        type: 'PLAYER_JOINED',
-        payload: { playerId, roomId, roomSessionToken: room.players.find(player => player.playerId === playerId)?.sessionToken }
-    }));
+    sendPlayerJoined(ws, roomId, playerId, room.players.find(player => player.playerId === playerId)?.sessionToken);
 
     const baseGeishas = room.baseGeishas;
     if (!baseGeishas) {
-        ws.send(JSON.stringify({ type: 'ERROR', payload: { message: GEISHA_SET_CONFIG_ERROR_MESSAGE, code: 'ROOM_CONFIG_INVALID' } }));
+        sendLifecycleError(ws, GEISHA_SET_CONFIG_ERROR_MESSAGE, 'ROOM_CONFIG_INVALID');
         return;
     }
     const updatedGameState = createWaitingGameState(
