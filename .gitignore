@@ -2,6 +2,7 @@
 
 # 相依套件
 /node_modules
+/server/
 /.pnp
 .pnp.js
 
