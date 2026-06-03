@@ -6,10 +6,6 @@ import type {
     GeishaSet,
     RoomSetupMode
 } from '@newhandarky/hanakoji-game-types';
-import {
-    DEFAULT_GEISHA_SET,
-    DEFAULT_ROOM_SETUP_MODE
-} from '../game/geishaSetCatalog.js';
 import type {
     PlayerMetaMap,
     ServerGameState
@@ -22,7 +18,6 @@ import {
 import { type NpcDifficulty } from '../npc/npcConfig.js';
 import { type DealSequenceStep } from '../game/roundPreparation.js';
 import {
-    createOrderDecisionState,
     type OrderDecisionState
 } from '../game/openingFlow.js';
 import {
@@ -110,6 +105,13 @@ import {
     sendRoomClientMessage,
     sendRoomPendingInteractionState
 } from './roomClientEventRuntime.js';
+import {
+    createInitialRoomState,
+    getRoomOpponentId,
+    getRoomOpponentState,
+    getRoomPlayerState,
+    isRoomNpcPlayerId
+} from './roomStateRuntime.js';
 
 type GameRoomPlayer = RoomSeat & {
     sessionToken?: string;
@@ -143,44 +145,30 @@ export class GameRoom implements RestorableRoomLike {
     scheduler: RoomScheduler;
 
     constructor(roomId: string, scheduler: RoomScheduler = roomScheduler) {
-        // 房間 ID
-        this.roomId = roomId;
-        // 房間建立時間
-        this.createdAt = Date.now();
-        // 房間內玩家列表
-        this.players = [];
-        // 遊戲狀態快照
-        this.gameState = null;
-        // 最大玩家數
-        this.maxPlayers = 2;
-        // 房主玩家 ID
-        this.hostId = null;
-        // 藝妓組合
-        this.geishaSet = DEFAULT_GEISHA_SET;
-        // 建房角色設定模式
-        this.setupMode = DEFAULT_ROOM_SETUP_MODE;
-        this.customSelection = null;
-        this.orderDecisionState = createOrderDecisionState();
-        // 藝妓卡的基底資料（跨回合保留好感）
-        this.baseGeishas = null;
-        // 發牌動畫序列
-        this.dealSequence = [];
-        // 上一輪起始玩家 ID
-        this.lastRoundStarterId = null;
-        // 回合結算延遲計時器
-        this.roundResolveTimer = null;
-        // NPC 玩家資訊
-        this.npcId = null;
-        this.npcDifficulty = null;
-        this.npcActionTimer = null;
-        this.npcResponseTimer = null;
-        // 再來一場確認集合
-        this.rematchConfirmations = new Set();
-        // 開局準備確認集合
-        this.readyConfirmations = new Set();
-        this.matchCompletionCounter = 0;
-        this.currentCompletionId = null;
-        this.scheduler = scheduler;
+        const initialState = createInitialRoomState(roomId, scheduler);
+        this.roomId = initialState.roomId;
+        this.createdAt = initialState.createdAt;
+        this.players = initialState.players;
+        this.gameState = initialState.gameState;
+        this.maxPlayers = initialState.maxPlayers;
+        this.hostId = initialState.hostId;
+        this.geishaSet = initialState.geishaSet;
+        this.setupMode = initialState.setupMode;
+        this.customSelection = initialState.customSelection;
+        this.orderDecisionState = initialState.orderDecisionState;
+        this.baseGeishas = initialState.baseGeishas;
+        this.dealSequence = initialState.dealSequence;
+        this.lastRoundStarterId = initialState.lastRoundStarterId;
+        this.roundResolveTimer = initialState.roundResolveTimer;
+        this.npcId = initialState.npcId;
+        this.npcDifficulty = initialState.npcDifficulty;
+        this.npcActionTimer = initialState.npcActionTimer;
+        this.npcResponseTimer = initialState.npcResponseTimer;
+        this.rematchConfirmations = initialState.rematchConfirmations;
+        this.readyConfirmations = initialState.readyConfirmations;
+        this.matchCompletionCounter = initialState.matchCompletionCounter;
+        this.currentCompletionId = initialState.currentCompletionId;
+        this.scheduler = initialState.scheduler;
     }
 
     // 產出可儲存的房間快照（不含連線物件）
@@ -195,7 +183,7 @@ export class GameRoom implements RestorableRoomLike {
 
     // 判斷是否為 NPC 玩家
     isNpcPlayerId(playerId: string): boolean {
-        return Boolean(this.npcId) && playerId === this.npcId;
+        return isRoomNpcPlayerId(this, playerId);
     }
 
     // 建立 NPC 玩家（使用假連線避免廣播錯誤）
@@ -344,27 +332,17 @@ export class GameRoom implements RestorableRoomLike {
 
     // 取得玩家的遊戲狀態資料
     getPlayerState(playerId: string): GamePlayer | null {
-        if (!this.gameState) {
-            return null;
-        }
-
-        return this.gameState.players.find(player => player.id === playerId) ?? null;
+        return getRoomPlayerState(this, playerId);
     }
 
     // 取得對手玩家 ID
     getOpponentId(playerId: string): string | null {
-        return this.players
-            .map(player => player.playerId)
-            .find(id => id !== playerId) ?? null;
+        return getRoomOpponentId(this, playerId);
     }
 
     // 取得對手玩家狀態
     getOpponentState(playerId: string): GamePlayer | null {
-        const opponentId = this.getOpponentId(playerId);
-        if (!opponentId) {
-            return null;
-        }
-        return this.getPlayerState(opponentId);
+        return getRoomOpponentState(this, playerId);
     }
 
     // 開始當前玩家回合（抽牌、重置互動狀態）
