@@ -10,7 +10,6 @@ import type {
     PlayerMetaMap,
     ServerGameState
 } from '../game/serverGameStateTypes.js';
-import { backendLogger } from '../utils/runtimeLogger.js';
 import {
     type RoomSeat,
     type RoomSocketLike
@@ -41,8 +40,8 @@ import {
     type TimerHandle
 } from './roomScheduler.js';
 import {
+    addRoomNpcSeat,
     buildRoomNpcAction,
-    buildNpcSeat,
     clearRoomNpcTimers,
     performRoomNpcAction,
     performRoomNpcResponse,
@@ -192,21 +191,7 @@ export class GameRoom implements RestorableRoomLike {
 
     // 建立 NPC 玩家（使用假連線避免廣播錯誤）
     addNpcPlayer(difficulty: unknown = 'easy'): string | null {
-        if (this.npcId || this.players.length >= this.maxPlayers) {
-            return null;
-        }
-
-        const update = buildNpcSeat(difficulty);
-        this.players.push(update.seat);
-        this.npcId = update.npcId;
-        this.npcDifficulty = update.difficulty;
-
-        backendLogger.info(`🤖 NPC 玩家加入房間 ${this.roomId}`, {
-            roomId: this.roomId,
-            npcId: update.npcId,
-            difficulty: update.difficulty
-        });
-        return update.npcId;
+        return addRoomNpcSeat(this, difficulty);
     }
 
     getPlayerMetaMap(): PlayerMetaMap {
