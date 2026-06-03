@@ -9,6 +9,13 @@ const CORS_ORIGINS = [
     'https://newhandarky.github.io/holo-koji/'
 ];
 
+export const buildHealthResponse = () => ({
+    status: 'ok',
+    environment: process.env.NODE_ENV,
+    timestamp: new Date().toISOString(),
+    corsOrigins: CORS_ORIGINS
+});
+
 export const createHttpApp = (): Express => {
     const app = express();
 
@@ -22,12 +29,7 @@ export const createHttpApp = (): Express => {
     app.use(express.json());
 
     app.get('/health', (_req, res) => {
-        res.json({
-            status: 'ok',
-            environment: process.env.NODE_ENV,
-            timestamp: new Date().toISOString(),
-            corsOrigins: CORS_ORIGINS
-        });
+        res.json(buildHealthResponse());
     });
 
     return app;
