@@ -4,7 +4,7 @@ import type {
     GeishaSet,
     RoomSetupMode
 } from '@newhandarky/hanakoji-game-types';
-import { DEFAULT_GEISHA_SET } from '../game/geishaSetRules.js';
+import { DEFAULT_GEISHA_SET } from '../game/geishaSetCatalog.js';
 import {
     createCustomSelectedGeishas,
     createRandomizedGeishas

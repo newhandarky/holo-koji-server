@@ -4,7 +4,7 @@ import type {
     OpeningDealSummary,
     OpeningDealStep
 } from '@newhandarky/hanakoji-game-types';
-import { ginzaBoardSlotDefinitions } from './geishaSetRules.js';
+import { ginzaBoardSlotDefinitions } from './geishaSetCatalog.js';
 import {
     defaultRandomSource,
     normalizeRandomSource,

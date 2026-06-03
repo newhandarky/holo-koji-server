@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import type { Geisha, ItemCard, OpeningDealSummary } from '@newhandarky/hanakoji-game-types';
-import { ginzaBoardSlotDefinitions } from './geishaSetRules.js';
+import { ginzaBoardSlotDefinitions } from './geishaSetCatalog.js';
 import { createDeterministicRandomSource } from './gameRandomSource.js';
 import { createRandomizedGeishas } from './geishaBoardFactory.js';
 import {

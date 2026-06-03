@@ -1,5 +1,5 @@
 import type { GeishaSet } from '@newhandarky/hanakoji-game-types';
-import { DEFAULT_GEISHA_SET } from '../game/geishaSetRules.js';
+import { DEFAULT_GEISHA_SET } from '../game/geishaSetCatalog.js';
 import type { ServerGameState } from '../game/serverGameStateTypes.js';
 import type { RoomSeat } from '../utils/roomSession.js';
 import type { DealSequenceStep } from '../game/roundPreparation.js';
