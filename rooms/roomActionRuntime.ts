@@ -9,12 +9,14 @@ import {
 } from '../game/actionValidation.js';
 import {
     applySecretAction,
-    applyTradeOffAction,
+    applyTradeOffAction
+} from '../game/activeActionTransitions.js';
+import {
     initiateCompetitionAction,
     initiateGiftAction,
     resolveCompetitionAction,
     resolveGiftAction
-} from '../game/actionTransitions.js';
+} from '../game/interactionActionTransitions.js';
 import type { WireMessage } from './roomMessaging.js';
 
 type GamePlayer = ServerGameState['players'][number];
