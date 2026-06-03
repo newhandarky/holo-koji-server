@@ -4,7 +4,7 @@ import type {
     OpeningDealSummary,
     Player
 } from '@newhandarky/hanakoji-game-types';
-import { markOpeningDealNotReplayable } from './gameStateFactory.js';
+import { markOpeningDealNotReplayable } from './deckOpeningFactory.js';
 
 export const cloneTransitionPlayer = (player: Player): Player => ({
     ...player,
