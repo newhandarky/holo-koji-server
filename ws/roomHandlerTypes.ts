@@ -1,9 +1,3 @@
-import type {
-    CustomCharacterSelection,
-    Geisha,
-    GeishaSet,
-    RoomSetupMode
-} from '@newhandarky/hanakoji-game-types';
 import type { ServerAction } from '../game/actionValidation.js';
 import type {
     AddPlayerResult,
@@ -11,14 +5,8 @@ import type {
 } from '../rooms/roomMembership.js';
 import type { RestorableRoomLike } from '../rooms/roomRestore.js';
 import type { RoomScheduler } from '../rooms/roomScheduler.js';
-import type {
-    PlayerMetaMap,
-    ServerGameState
-} from '../game/serverGameStateTypes.js';
-import type {
-    RoomSeat,
-    RoomSocketLike
-} from '../utils/roomSession.js';
+import type { PlayerMetaMap } from '../game/serverGameStateTypes.js';
+import type { RoomSocketLike } from '../utils/roomSession.js';
 
 export interface RoomMessageHandlerLike {
     confirmOrder: (playerId: string) => void;
@@ -29,14 +17,7 @@ export interface RoomMessageHandlerLike {
 }
 
 export interface RoomLifecycleHandlerLike extends RestorableRoomLike {
-    players: Array<RoomSeat & { sessionToken?: string }>;
     maxPlayers: number;
-    hostId: string | null;
-    geishaSet: GeishaSet;
-    setupMode: RoomSetupMode;
-    customSelection: CustomCharacterSelection | null;
-    baseGeishas: Geisha[] | null;
-    gameState: ServerGameState | null;
     regenerateBaseGeishas: () => boolean;
     addPlayer: (playerId: string, ws: RoomSocketLike, meta?: PlayerMetaPayload) => AddPlayerResult;
     addNpcPlayer: (difficulty?: unknown) => string | null;
@@ -44,7 +25,7 @@ export interface RoomLifecycleHandlerLike extends RestorableRoomLike {
     broadcastGameState: () => void;
     persistRoomSnapshot: () => void;
     ensureBaseGeishas: () => boolean;
-    buildClientGameState: (viewerId: string) => ServerGameState | null;
+    buildClientGameState: (viewerId: string) => RestorableRoomLike['gameState'];
     startOrderDecision: () => void;
     detachPlayerConnection: (playerId: string, ws?: RoomSocketLike | null) => boolean;
     removePlayer: (playerId: string, ws?: RoomSocketLike | null) => boolean;

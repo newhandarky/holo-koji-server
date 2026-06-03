@@ -1,11 +1,7 @@
 import type { WebSocket } from 'ws';
 import type { GeishaSet } from '@newhandarky/hanakoji-game-types';
 import { createWaitingGameState } from '../game/serverGameStateFactory.js';
-import type { RestorableRoomSnapshot } from '../rooms/roomRestore.js';
-import {
-    normalizeCustomSelection,
-    restoreRoomFromSnapshot
-} from '../rooms/roomRestore.js';
+import { normalizeCustomSelection } from '../rooms/roomRestore.js';
 import {
     CUSTOM_SELECTION_ERROR_MESSAGE,
     GEISHA_SET_CONFIG_ERROR_MESSAGE,
@@ -28,6 +24,7 @@ import {
     sendPlayerJoined,
     sendRoomCreated
 } from './roomLifecycleResponses.js';
+import { lookupRoomForJoin } from './roomRestoreLookup.js';
 
 const generateRoomId = (): string => Math.random().toString(36).substring(2, 8).toUpperCase();
 
@@ -122,21 +119,11 @@ export const joinRoomFromLifecyclePayload = async <TRoom extends RoomLifecycleHa
         roomId,
         playerId
     } = payload;
-    let room = deps.rooms.get(roomId);
-    if (!room) {
-        const snapshot = await deps.loadRoomSnapshot<RestorableRoomSnapshot>(roomId);
-        if (snapshot) {
-            const restoreResult = restoreRoomFromSnapshot(snapshot, {
-                createRoom: restoredRoomId => deps.createRoom(restoredRoomId)
-            });
-            room = restoreResult.room ?? undefined;
-            if (room) {
-                deps.rooms.set(roomId, room);
-            } else if (restoreResult.errorMessage) {
-                sendLifecycleError(ws, restoreResult.errorMessage, 'ROOM_RESTORE_FAILED');
-                return;
-            }
-        }
+    const lookupResult = await lookupRoomForJoin(roomId, deps);
+    const room = lookupResult.room;
+    if (!room && lookupResult.errorMessage) {
+        sendLifecycleError(ws, lookupResult.errorMessage, 'ROOM_RESTORE_FAILED');
+        return;
     }
     if (!room) {
         sendLifecycleError(ws, '房間不存在', 'ROOM_NOT_FOUND');
