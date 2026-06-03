@@ -9,7 +9,7 @@
 - Build command currently configured in Render: `npm install`
 - Start command: `npm start`
 
-The server is TypeScript-first and starts from `dist/index.js`. Because Render currently runs only `npm install` as the build command, `package.json` keeps `postinstall` wired to `npm run build`. Do not remove `postinstall` unless the Render build command is changed to run `npm run build` explicitly.
+The server is TypeScript-first and starts from `dist/index.js`. Because Render currently runs only `npm install` as the build command, `package.json` keeps `postinstall` wired to `npm run build`. Do not remove `postinstall` unless the Render build command is changed to run `npm run build` explicitly, for example `npm install && npm run build`.
 
 ## Health check
 
@@ -29,14 +29,13 @@ The root path can return 404. That does not mean the service failed; the deploye
 
 ## Local deployment verification
 
-Before merging deployment-sensitive server changes, run:
+Before merging deployment-sensitive server changes, run the deploy verification script:
 
 ```bash
-npm test
-npm ci --omit=dev --dry-run
+npm run verify:deploy
 ```
 
-For a clean-install artifact check, create a temporary copy without `node_modules` or `dist`, then run:
+This script runs the backend test suite, checks a production install dry run, and confirms that `dist/index.js` exists and parses. For a manual clean-install artifact check, create a temporary copy without `node_modules` or `dist`, then run:
 
 ```bash
 npm install
