@@ -23,6 +23,10 @@ import {
     validateRoomPlayerInRoom,
     validateRoomPlayerTurn
 } from './roomActionGuards.js';
+import {
+    publishRoomActiveActionResult,
+    publishRoomInteractionResolved
+} from './roomActionEvents.js';
 
 type GamePlayer = ServerGameState['players'][number];
 
@@ -157,20 +161,11 @@ export const handleRoomPlaySecret = (
         room.gameState.lastAction = { playerId: updatedPlayer.id, action: 'secret' };
     }
 
-    room.players.forEach((recipient) => {
-        const shouldReveal = recipient.playerId === updatedPlayer.id;
-        room.sendToPlayer(recipient.playerId, {
-            type: 'ACTION_EXECUTED',
-            payload: {
-                playerId: updatedPlayer.id,
-                action: 'secret',
-                cardIds: shouldReveal ? revealedCardIds : []
-            }
-        });
+    publishRoomActiveActionResult(room, {
+        playerId: updatedPlayer.id,
+        action: 'secret',
+        revealedCardIds
     });
-
-    room.broadcastGameState();
-    room.endTurn();
 };
 
 export const handleRoomTradeOff = (
@@ -196,20 +191,11 @@ export const handleRoomTradeOff = (
         room.gameState.lastAction = { playerId: updatedPlayer.id, action: 'trade-off' };
     }
 
-    room.players.forEach((recipient) => {
-        const shouldReveal = recipient.playerId === updatedPlayer.id;
-        room.sendToPlayer(recipient.playerId, {
-            type: 'ACTION_EXECUTED',
-            payload: {
-                playerId: updatedPlayer.id,
-                action: 'trade-off',
-                cardIds: shouldReveal ? revealedCardIds : []
-            }
-        });
+    publishRoomActiveActionResult(room, {
+        playerId: updatedPlayer.id,
+        action: 'trade-off',
+        revealedCardIds
     });
-
-    room.broadcastGameState();
-    room.endTurn();
 };
 
 export const handleRoomInitiateGift = (
@@ -271,18 +257,12 @@ export const handleRoomResolveGift = (
         room.gameState.pendingInteraction = result.value.pendingInteraction;
     }
 
-    room.broadcast({
-        type: 'INTERACTION_RESOLVED',
-        payload: {
-            interaction: 'GIFT_SELECTION',
-            initiatorId: result.value.initiatorId,
-            targetPlayerId: result.value.targetPlayerId,
-            chosenCardId: result.value.chosenCardId
-        }
+    publishRoomInteractionResolved(room, {
+        interaction: 'GIFT_SELECTION',
+        initiatorId: result.value.initiatorId,
+        targetPlayerId: result.value.targetPlayerId,
+        chosenCardId: result.value.chosenCardId
     });
-
-    room.broadcastGameState();
-    room.endTurn();
 };
 
 export const handleRoomInitiateCompetition = (
@@ -344,16 +324,10 @@ export const handleRoomResolveCompetition = (
         room.gameState.pendingInteraction = result.value.pendingInteraction;
     }
 
-    room.broadcast({
-        type: 'INTERACTION_RESOLVED',
-        payload: {
-            interaction: 'COMPETITION_SELECTION',
-            initiatorId: result.value.initiatorId,
-            targetPlayerId: result.value.targetPlayerId,
-            chosenGroupIndex: result.value.chosenGroupIndex
-        }
+    publishRoomInteractionResolved(room, {
+        interaction: 'COMPETITION_SELECTION',
+        initiatorId: result.value.initiatorId,
+        targetPlayerId: result.value.targetPlayerId,
+        chosenGroupIndex: result.value.chosenGroupIndex
     });
-
-    room.broadcastGameState();
-    room.endTurn();
 };
