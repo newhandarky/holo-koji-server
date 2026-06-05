@@ -18,10 +18,15 @@ import {
 import {
     buildPublicAccountProfile,
     createAccountProfileStore,
-    sanitizeString,
     validateVerifiedLineIdentity,
     type AccountCounterUpdateRequest
 } from './accountProfileStore.js';
+import {
+    recordAccountMatchCompletion,
+    type AccountCompletionRecord,
+    type AccountMatchCompletionRequest,
+    type AccountMatchCompletionResult
+} from './accountCompletionRuntime.js';
 
 export {
     buildPublicAccountProfile,
@@ -42,29 +47,6 @@ interface AccountStoreOptions {
 
 interface AccountSyncOptions {
     trustedIdentity?: boolean;
-}
-
-interface AccountCompletionRecord {
-    completionId: string;
-    processedAt: string;
-    affectedLineUserIds: string[];
-}
-
-interface MatchCompletionPlayer {
-    playerId: string;
-    accountProfile?: Pick<LineAccountProfile, 'lineUserId'> | null;
-    [key: string]: unknown;
-}
-
-interface AccountMatchCompletionRequest {
-    completionId?: string | null;
-    players?: MatchCompletionPlayer[];
-    winner?: string;
-}
-
-interface AccountMatchCompletionResult {
-    accountProfiles: LineAccountProfile[];
-    achievements: AchievementMatchCompletionResult;
 }
 
 type AchievementStoreLike = Pick<AchievementStore, 'recordMatchCompletion'> & Partial<Omit<AchievementStore, 'recordMatchCompletion'>>;
@@ -154,78 +136,17 @@ export const createAccountStore = ({
         return syncVerifiedAccount(_request as AccountSyncRequest);
     };
 
-    const recordMatchCompletion = async ({
-        completionId,
-        players = [],
-        winner
-    }: AccountMatchCompletionRequest = {}): Promise<AccountMatchCompletionResult> => {
-        const completedAt = now().toISOString();
-        const normalizedCompletionId = sanitizeString(completionId);
-        if (!normalizedCompletionId) {
-            const achievementResult = await activeAchievementStore.recordMatchCompletion({
-                completionId: normalizedCompletionId,
-                completedAt,
-                winner,
-                players
-            } satisfies AchievementMatchCompletionRequest);
-            return {
-                accountProfiles: [],
-                achievements: achievementResult
-            };
-        }
-
-        const existingCompletion = await readProcessedCompletion(normalizedCompletionId);
-        if (existingCompletion) {
-            const persistenceStatus = getPersistenceStatus();
-            const achievementStatus = persistenceStatus.mode === 'durable' && persistenceStatus.available === true
-                ? 'available'
-                : 'unavailable';
-            return {
-                accountProfiles: [],
-                achievements: {
-                    status: achievementStatus,
-                    updates: [],
-                    persistenceStatus,
-                    completionId: normalizedCompletionId
-                }
-            };
-        }
-
-        const updates: LineAccountProfile[] = [];
-        const affectedLineUserIds: string[] = [];
-        for (const player of players) {
-            const lineUserId = player?.accountProfile?.lineUserId;
-            if (!lineUserId) {
-                continue;
-            }
-            const updated = await profileStore.updateCountersForCompletedGame({
-                lineUserId,
-                won: player.playerId === winner,
-                completedAt
-            });
-            if (updated) {
-                updates.push(updated);
-                affectedLineUserIds.push(updated.lineUserId);
-            }
-        }
-        const achievementResult = await activeAchievementStore.recordMatchCompletion({
-            completionId: normalizedCompletionId,
-            completedAt,
-            winner,
-            players
-        } satisfies AchievementMatchCompletionRequest);
-
-        await writeProcessedCompletion({
-            completionId: normalizedCompletionId,
-            processedAt: now().toISOString(),
-            affectedLineUserIds
-        });
-
-        return {
-            accountProfiles: updates,
-            achievements: achievementResult
-        };
-    };
+    const recordMatchCompletion = async (request: AccountMatchCompletionRequest = {}): Promise<AccountMatchCompletionResult> => (
+        recordAccountMatchCompletion({
+            request,
+            now,
+            getPersistenceStatus,
+            readProcessedCompletion,
+            writeProcessedCompletion,
+            updateCountersForCompletedGame: profileStore.updateCountersForCompletedGame,
+            achievementStore: activeAchievementStore
+        })
+    );
 
     return {
         getPersistenceStatus,
