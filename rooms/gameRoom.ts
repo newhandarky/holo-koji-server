@@ -64,11 +64,13 @@ import {
 } from './roomInteractionActionRuntime.js';
 import {
     beginRoomTurnForCurrentPlayer,
-    endRoomTurn,
+    endRoomTurn
+} from './roomTurnLifecycleRuntime.js';
+import {
     resolveRoomRound,
     scheduleRoomNextRound,
     startRoomNextRound
-} from './roomTurnRoundRuntime.js';
+} from './roomRoundResolutionRuntime.js';
 import {
     confirmRoomOrder,
     decideRoomOrder,
