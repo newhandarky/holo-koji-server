@@ -181,6 +181,32 @@ test('recordMatchCompletion updates bound players only and caps wins by games pl
     });
 });
 
+test('recordMatchCompletion ignores client-supplied top-level lineUserId claims', async () => {
+    const store = createAccountStore({ redisUrl: '', now: fixedClock('2026-05-05T12:00:00.000Z') });
+    await store.syncVerifiedAccount({ verifiedIdentity, profile });
+
+    const result = await store.recordMatchCompletion({
+        completionId: 'room-spoofed-line-user:end',
+        winner: 'host',
+        players: [
+            {
+                playerId: 'host',
+                lineUserId: verifiedIdentity.lineUserId
+            },
+            { playerId: 'guest' }
+        ]
+    });
+    const storedProfile = await store.getProfile(verifiedIdentity.lineUserId);
+
+    assert.deepEqual(result.accountProfiles, []);
+    assert.ok(storedProfile);
+    assert.deepEqual(storedProfile.counters, {
+        gamesPlayed: 0,
+        wins: 0,
+        lastPlayedAt: null
+    });
+});
+
 test('recordMatchCompletion updates account counters and achievement progress from one completion', async () => {
     const achievementCalls: AchievementMatchCompletionRequest[] = [];
     const achievementStore = {

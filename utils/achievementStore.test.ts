@@ -228,7 +228,10 @@ test('acknowledgeNewUnlocks clears unseen marker and returns refreshed summary',
     const before = await store.getAchievementSummary('U_HOST');
     assert.equal(before.newUnlockCount, 2);
 
-    const after = await store.acknowledgeNewUnlocks('U_HOST', ['first_completed_match']);
+    const after = await store.acknowledgeNewUnlocks('U_HOST', [
+        'not-a-real-achievement' as AchievementId,
+        'first_completed_match'
+    ]);
     assert.equal(after.status, 'available');
     assert.equal(after.items?.length, 4);
     assert.equal(getItem(after, 'first_completed_match').isNew, false);
