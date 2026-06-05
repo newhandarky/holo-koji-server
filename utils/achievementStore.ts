@@ -2,20 +2,14 @@ import type {
     AccountPersistenceStatus,
     AchievementId,
     AchievementStatus,
-    AchievementStatusResult,
-    AchievementSummaryItem
+    AchievementStatusResult
 } from '@newhandarky/hanakoji-game-types';
 import {
     createJsonPersistenceAdapter,
     type KeyValueClient
 } from './persistenceAdapter.js';
+import { ACHIEVEMENT_CATALOG } from './achievementCatalog.js';
 import {
-    ACHIEVEMENT_CATALOG,
-    isAchievementId
-} from './achievementCatalog.js';
-import {
-    buildAchievementSummaryItem,
-    countNewAchievementUnlocks,
     type AchievementProgressRecord,
     type AchievementUnlockRecord
 } from './achievementProgress.js';
@@ -25,6 +19,10 @@ import {
     type AchievementMatchCompletionResult,
     type ProcessedCompletionRecord
 } from './achievementCompletionRuntime.js';
+import {
+    acknowledgeAchievementUnlocks,
+    buildAchievementSummary
+} from './achievementSummaryRuntime.js';
 
 export { ACHIEVEMENT_CATALOG } from './achievementCatalog.js';
 export type {
@@ -124,22 +122,15 @@ export const createAchievementStore = ({
         await persistence.setJson(buildRedisCompletionKey(record.completionId), record);
     };
 
-    const buildSummary = async (lineUserId: string, persistenceStatus: AccountPersistenceStatus): Promise<AchievementStatusResult> => {
-        const items: AchievementSummaryItem[] = [];
-        for (const item of ACHIEVEMENT_CATALOG) {
-            const progress = await getProgress(lineUserId, item.achievementId);
-            const unlock = await getUnlock(lineUserId, item.achievementId);
-            items.push(buildAchievementSummaryItem(item, progress, unlock));
-        }
-
-        return {
-            status: 'available',
+    const buildSummary = async (lineUserId: string, persistenceStatus: AccountPersistenceStatus): Promise<AchievementStatusResult> => (
+        buildAchievementSummary({
+            lineUserId,
             persistenceStatus,
-            newUnlockCount: countNewAchievementUnlocks(items),
-            items,
-            generatedAt: now().toISOString()
-        };
-    };
+            now,
+            getProgress,
+            getUnlock
+        })
+    );
 
     const getAchievementSummary = async (lineUserId?: string | null, _legacyProfile?: unknown): Promise<AchievementStatusResult> => {
         const { available, persistenceStatus } = getDurableStatus();
@@ -172,35 +163,20 @@ export const createAchievementStore = ({
         })
     );
 
-    const acknowledgeNewUnlocks = async (lineUserId?: string | null, achievementIds: AchievementId[] = []): Promise<AchievementStatusResult> => {
-        const { available, persistenceStatus } = getDurableStatus();
-        if (!lineUserId) {
-            return buildGuestSummary(persistenceStatus);
-        }
-        if (!available) {
-            return buildUnavailableSummary(persistenceStatus);
-        }
-
-        try {
-            for (const achievementId of achievementIds) {
-                if (!isAchievementId(achievementId)) {
-                    continue;
-                }
-                const unlock = await getUnlock(lineUserId, achievementId);
-                if (!unlock || unlock.seenAt) {
-                    continue;
-                }
-                await setUnlock({
-                    ...unlock,
-                    seenAt: now().toISOString()
-                });
-            }
-
-            return await buildSummary(lineUserId, persistenceStatus);
-        } catch (error) {
-            return buildUnavailableSummary(getPersistenceStatus());
-        }
-    };
+    const acknowledgeNewUnlocks = async (lineUserId?: string | null, achievementIds: AchievementId[] = []): Promise<AchievementStatusResult> => (
+        acknowledgeAchievementUnlocks({
+            lineUserId,
+            achievementIds,
+            now,
+            getDurableStatus,
+            getPersistenceStatus,
+            buildGuestSummary,
+            buildUnavailableSummary,
+            getUnlock,
+            setUnlock,
+            buildSummary
+        })
+    );
 
     return {
         getAchievementSummary,
