@@ -50,14 +50,18 @@ import {
 } from './roomNpcRuntime.js';
 import {
     handleRoomAction,
-    handleRoomInitiateCompetition,
-    handleRoomInitiateGift,
-    handleRoomPlaySecret,
-    handleRoomResolveCompetition,
-    handleRoomResolveGift,
-    handleRoomTradeOff,
     validateRoomPendingInteraction
 } from './roomActionRuntime.js';
+import {
+    handleRoomPlaySecret,
+    handleRoomTradeOff
+} from './roomActiveActionRuntime.js';
+import {
+    handleRoomInitiateCompetition,
+    handleRoomInitiateGift,
+    handleRoomResolveCompetition,
+    handleRoomResolveGift
+} from './roomInteractionActionRuntime.js';
 import {
     beginRoomTurnForCurrentPlayer,
     endRoomTurn,
@@ -69,9 +73,9 @@ import {
     confirmRoomOrder,
     decideRoomOrder,
     prepareRoomOrderDecisionState,
-    startRoomGameWithOrder,
     startRoomOrderDecision
-} from './roomOpeningRuntime.js';
+} from './roomOrderDecisionRuntime.js';
+import { startRoomGameWithOrder } from './roomOpeningStartRuntime.js';
 import { resumeRestoredRoomRuntime } from './roomRuntimeResume.js';
 import {
     confirmRoomReady,
