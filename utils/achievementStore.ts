@@ -2,32 +2,37 @@ import type {
     AccountPersistenceStatus,
     AchievementId,
     AchievementStatus,
-    AchievementStatusResult,
-    AchievementSummaryItem
+    AchievementStatusResult
 } from '@newhandarky/hanakoji-game-types';
 import {
     createJsonPersistenceAdapter,
     type KeyValueClient
 } from './persistenceAdapter.js';
+import { ACHIEVEMENT_CATALOG } from './achievementCatalog.js';
 import {
-    ACHIEVEMENT_CATALOG,
-    isAchievementId
-} from './achievementCatalog.js';
-import {
-    buildAchievementSummaryItem,
-    buildAchievementUnlockRecord,
-    buildNextAchievementProgress,
-    countNewAchievementUnlocks,
-    shouldUnlockAchievement,
     type AchievementProgressRecord,
     type AchievementUnlockRecord
 } from './achievementProgress.js';
+import {
+    recordAchievementMatchCompletion,
+    type AchievementMatchCompletionRequest,
+    type AchievementMatchCompletionResult,
+    type ProcessedCompletionRecord
+} from './achievementCompletionRuntime.js';
+import {
+    acknowledgeAchievementUnlocks,
+    buildAchievementSummary
+} from './achievementSummaryRuntime.js';
 
 export { ACHIEVEMENT_CATALOG } from './achievementCatalog.js';
 export type {
     AchievementProgressRecord,
     AchievementUnlockRecord
 } from './achievementProgress.js';
+export type {
+    AchievementMatchCompletionRequest,
+    AchievementMatchCompletionResult
+} from './achievementCompletionRuntime.js';
 
 const REDIS_URL = process.env.REDIS_URL;
 const ACHIEVEMENT_UNAVAILABLE_MESSAGE = '成就暫時不可用，進度目前無法保存。';
@@ -35,34 +40,6 @@ const ACHIEVEMENT_GUEST_MESSAGE = '成就需要綁定帳號後才會保存。';
 const ACHIEVEMENT_PROGRESS_KEY_PREFIX = 'hanamikoji:achievement:progress:';
 const ACHIEVEMENT_UNLOCK_KEY_PREFIX = 'hanamikoji:achievement:unlock:';
 const ACHIEVEMENT_COMPLETION_KEY_PREFIX = 'hanamikoji:achievement:completion:';
-
-interface ProcessedCompletionRecord {
-    completionId: string;
-    processedAt: string;
-    affectedLineUserIds: string[];
-}
-
-interface AchievementPlayer {
-    playerId: string;
-    accountProfile?: {
-        lineUserId?: string;
-    } | null;
-    [key: string]: unknown;
-}
-
-export interface AchievementMatchCompletionRequest {
-    completionId?: string | null;
-    completedAt?: string;
-    winner?: string;
-    players?: AchievementPlayer[];
-}
-
-export interface AchievementMatchCompletionResult {
-    status: AchievementStatus;
-    updates: AchievementProgressRecord[];
-    persistenceStatus: AccountPersistenceStatus;
-    completionId?: string;
-}
 
 export interface AchievementStore {
     getAchievementSummary: (lineUserId?: string | null, legacyProfile?: unknown) => Promise<AchievementStatusResult>;
@@ -145,22 +122,15 @@ export const createAchievementStore = ({
         await persistence.setJson(buildRedisCompletionKey(record.completionId), record);
     };
 
-    const buildSummary = async (lineUserId: string, persistenceStatus: AccountPersistenceStatus): Promise<AchievementStatusResult> => {
-        const items: AchievementSummaryItem[] = [];
-        for (const item of ACHIEVEMENT_CATALOG) {
-            const progress = await getProgress(lineUserId, item.achievementId);
-            const unlock = await getUnlock(lineUserId, item.achievementId);
-            items.push(buildAchievementSummaryItem(item, progress, unlock));
-        }
-
-        return {
-            status: 'available',
+    const buildSummary = async (lineUserId: string, persistenceStatus: AccountPersistenceStatus): Promise<AchievementStatusResult> => (
+        buildAchievementSummary({
+            lineUserId,
             persistenceStatus,
-            newUnlockCount: countNewAchievementUnlocks(items),
-            items,
-            generatedAt: now().toISOString()
-        };
-    };
+            now,
+            getProgress,
+            getUnlock
+        })
+    );
 
     const getAchievementSummary = async (lineUserId?: string | null, _legacyProfile?: unknown): Promise<AchievementStatusResult> => {
         const { available, persistenceStatus } = getDurableStatus();
@@ -178,131 +148,35 @@ export const createAchievementStore = ({
         }
     };
 
-    const updatePlayerProgress = async (lineUserId: string, won: boolean, completedAt: string): Promise<AchievementProgressRecord[]> => {
-        const updates: AchievementProgressRecord[] = [];
-        for (const item of ACHIEVEMENT_CATALOG) {
-            const existing = await getProgress(lineUserId, item.achievementId);
-            const nextProgress = buildNextAchievementProgress({
-                item,
-                existing,
-                lineUserId,
-                won,
-                completedAt
-            });
-            await setProgress(nextProgress);
+    const recordMatchCompletion = async (request: AchievementMatchCompletionRequest = {}): Promise<AchievementMatchCompletionResult> => (
+        recordAchievementMatchCompletion({
+            request,
+            now,
+            getDurableStatus,
+            getPersistenceStatus,
+            getProgress,
+            setProgress,
+            getUnlock,
+            setUnlock,
+            getProcessedCompletion,
+            setProcessedCompletion
+        })
+    );
 
-            const existingUnlock = await getUnlock(lineUserId, item.achievementId);
-            if (shouldUnlockAchievement(nextProgress, existingUnlock)) {
-                await setUnlock(buildAchievementUnlockRecord(nextProgress, completedAt));
-            }
-            updates.push(nextProgress);
-        }
-        return updates;
-    };
-
-    const recordMatchCompletion = async ({
-        completionId,
-        completedAt = now().toISOString(),
-        winner,
-        players = []
-    }: AchievementMatchCompletionRequest = {}): Promise<AchievementMatchCompletionResult> => {
-        const { available, persistenceStatus } = getDurableStatus();
-        if (!available) {
-            return {
-                status: 'unavailable',
-                updates: [],
-                persistenceStatus
-            };
-        }
-
-        if (!completionId) {
-            return {
-                status: 'unavailable',
-                updates: [],
-                persistenceStatus
-            };
-        }
-
-        try {
-            const existingCompletion = await getProcessedCompletion(completionId);
-            if (existingCompletion) {
-                return {
-                    status: 'available',
-                    updates: [],
-                    persistenceStatus,
-                    completionId
-                };
-            }
-        } catch (error) {
-            return {
-                status: 'unavailable',
-                updates: [],
-                persistenceStatus: getPersistenceStatus()
-            };
-        }
-
-        try {
-            const updates: AchievementProgressRecord[] = [];
-            const affectedLineUserIds: string[] = [];
-            for (const player of players) {
-                const lineUserId = player?.accountProfile?.lineUserId;
-                if (!lineUserId) {
-                    continue;
-                }
-                affectedLineUserIds.push(lineUserId);
-                updates.push(...await updatePlayerProgress(lineUserId, player.playerId === winner, completedAt));
-            }
-
-            await setProcessedCompletion({
-                completionId,
-                processedAt: now().toISOString(),
-                affectedLineUserIds
-            });
-
-            return {
-                status: 'available',
-                updates,
-                persistenceStatus,
-                completionId
-            };
-        } catch (error) {
-            return {
-                status: 'unavailable',
-                updates: [],
-                persistenceStatus: getPersistenceStatus()
-            };
-        }
-    };
-
-    const acknowledgeNewUnlocks = async (lineUserId?: string | null, achievementIds: AchievementId[] = []): Promise<AchievementStatusResult> => {
-        const { available, persistenceStatus } = getDurableStatus();
-        if (!lineUserId) {
-            return buildGuestSummary(persistenceStatus);
-        }
-        if (!available) {
-            return buildUnavailableSummary(persistenceStatus);
-        }
-
-        try {
-            for (const achievementId of achievementIds) {
-                if (!isAchievementId(achievementId)) {
-                    continue;
-                }
-                const unlock = await getUnlock(lineUserId, achievementId);
-                if (!unlock || unlock.seenAt) {
-                    continue;
-                }
-                await setUnlock({
-                    ...unlock,
-                    seenAt: now().toISOString()
-                });
-            }
-
-            return await buildSummary(lineUserId, persistenceStatus);
-        } catch (error) {
-            return buildUnavailableSummary(getPersistenceStatus());
-        }
-    };
+    const acknowledgeNewUnlocks = async (lineUserId?: string | null, achievementIds: AchievementId[] = []): Promise<AchievementStatusResult> => (
+        acknowledgeAchievementUnlocks({
+            lineUserId,
+            achievementIds,
+            now,
+            getDurableStatus,
+            getPersistenceStatus,
+            buildGuestSummary,
+            buildUnavailableSummary,
+            getUnlock,
+            setUnlock,
+            buildSummary
+        })
+    );
 
     return {
         getAchievementSummary,
