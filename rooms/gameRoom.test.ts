@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import type { Player } from '@newhandarky/hanakoji-game-types';
 import { GameRoom } from './gameRoom.js';
 import {
     restoreRoomFromSnapshot,
@@ -18,6 +19,17 @@ type CapturedMessage = {
     type: string;
     payload?: unknown;
 };
+
+const makePlayer = (id: string): Player => ({
+    id,
+    name: id,
+    hand: [{ id: `${id}-hand`, geishaId: 1, type: 'item' }],
+    playedCards: [],
+    secretCards: [{ id: `${id}-secret`, geishaId: 1, type: 'item' }],
+    discardedCards: [],
+    actionTokens: [],
+    score: { charm: 0, tokens: 0 }
+});
 
 const createCapturingSocket = (): { ws: RoomSocketLike; messages: CapturedMessage[] } => {
     const messages: CapturedMessage[] = [];
@@ -112,6 +124,98 @@ test('GameRoom remains compatible with room snapshot restore', () => {
     assert.equal(result.room?.players[0]?.playerId, 'host');
     assert.equal(result.room?.players[0]?.ws.readyState, 3);
     assert.equal(result.room?.baseGeishas?.length, 7);
+});
+
+test('GameRoom facade routes viewer-safe state through client event runtime', () => {
+    const host = createCapturingSocket();
+    const guest = createCapturingSocket();
+    const room = new GameRoom('room-viewer-safe');
+    room.players = [
+        { playerId: 'host', name: 'Host', ws: host.ws },
+        { playerId: 'guest', name: 'Guest', ws: guest.ws }
+    ];
+    room.gameState = {
+        gameId: 'room-viewer-safe',
+        players: [makePlayer('host'), makePlayer('guest')],
+        geishas: [],
+        drawPile: [{ id: 'draw', geishaId: 1, type: 'item' }],
+        discardPile: [],
+        currentPlayer: 0,
+        phase: 'playing',
+        round: 1,
+        winner: null,
+        orderDecision: {
+            isOpen: false,
+            phase: 'result',
+            players: ['host', 'guest'],
+            confirmations: ['host', 'guest'],
+            waitingFor: [],
+            currentPlayer: 'host'
+        },
+        pendingInteraction: null,
+        lastAction: undefined
+    };
+    let persisted = 0;
+    room.persistRoomSnapshot = () => {
+        persisted += 1;
+    };
+
+    const visibleToHost = room.buildClientGameState('host');
+    assert.deepEqual(visibleToHost?.drawPile, []);
+    assert.equal(visibleToHost?.players[1]?.hand[0]?.type, 'hidden');
+    assert.deepEqual(visibleToHost?.players[1]?.secretCards, []);
+
+    room.broadcastGameState();
+
+    assert.equal(persisted, 1);
+    assert.equal(host.messages[0]?.type, 'GAME_STATE_UPDATED');
+    assert.equal(guest.messages[0]?.type, 'GAME_STATE_UPDATED');
+    const hostPayload = host.messages[0]?.payload as NonNullable<typeof room.gameState>;
+    const guestPayload = guest.messages[0]?.payload as NonNullable<typeof room.gameState>;
+    assert.equal(hostPayload.players[1]?.hand[0]?.type, 'hidden');
+    assert.equal(guestPayload.players[0]?.hand[0]?.type, 'hidden');
+    assert.deepEqual(hostPayload.players[1]?.secretCards, []);
+    assert.deepEqual(guestPayload.players[0]?.secretCards, []);
+});
+
+test('GameRoom facade sends direct messages without broadcasting to other seats', () => {
+    const host = createCapturingSocket();
+    const guest = createCapturingSocket();
+    const room = new GameRoom('room-direct-message');
+    room.players = [
+        { playerId: 'host', name: 'Host', ws: host.ws },
+        { playerId: 'guest', name: 'Guest', ws: guest.ws }
+    ];
+
+    room.sendToPlayer('host', {
+        type: 'READY_CHECK',
+        payload: {
+            confirmations: [],
+            waitingFor: ['host', 'guest']
+        }
+    });
+
+    assert.deepEqual(host.messages, [{
+        type: 'READY_CHECK',
+        payload: {
+            confirmations: [],
+            waitingFor: ['host', 'guest']
+        }
+    }]);
+    assert.deepEqual(guest.messages, []);
+});
+
+test('GameRoom facade resumes restored resolution runtime through next-round scheduling', () => {
+    const room = new GameRoom('room-resume-facade');
+    room.gameState = { phase: 'resolution' } as NonNullable<typeof room.gameState>;
+    let scheduled = 0;
+    room.scheduleNextRound = () => {
+        scheduled += 1;
+    };
+
+    room.resumeRestoredRuntime();
+
+    assert.equal(scheduled, 1);
 });
 
 test('GameRoom starts game before sending masked deal animation cards', () => {

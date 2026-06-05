@@ -180,6 +180,8 @@ export class GameRoom implements RestorableRoomLike {
         this.scheduler = initialState.scheduler;
     }
 
+    // 快照 / 持久化委派區
+
     // 產出可儲存的房間快照（不含連線物件）
     buildRoomSnapshot(): RoomSnapshot {
         return buildRoomSnapshot(this);
@@ -189,6 +191,8 @@ export class GameRoom implements RestorableRoomLike {
     persistRoomSnapshot(): void {
         persistRoomSnapshot(this);
     }
+
+    // NPC 委派區
 
     // 判斷是否為 NPC 玩家
     isNpcPlayerId(playerId: string): boolean {
@@ -209,6 +213,8 @@ export class GameRoom implements RestorableRoomLike {
         clearRoomNpcTimers(this);
     }
 
+    // 回合準備委派區
+
     regenerateBaseGeishas(): boolean {
         return regenerateRoomBaseGeishas(this);
     }
@@ -216,6 +222,8 @@ export class GameRoom implements RestorableRoomLike {
     ensureBaseGeishas(): boolean {
         return ensureRoomBaseGeishas(this);
     }
+
+    // 對戰 / 準備 / 再來一場委派區
 
     // 送出再來一場請求
     requestRematch(playerId: string): void {
@@ -236,6 +244,8 @@ export class GameRoom implements RestorableRoomLike {
     startRematch() {
         startRoomRematch(this);
     }
+
+    // Client event 委派區
 
     // 將訊息傳送給指定玩家（避免廣播時洩漏資訊）
     sendToPlayer(playerId: string, message: WireMessage): void {
@@ -261,6 +271,8 @@ export class GameRoom implements RestorableRoomLike {
         return buildRoomDealSequenceForPlayer(this, playerId);
     }
 
+    // 座位 / 成員委派區
+
     // 加入玩家到房間，並回傳加入結果
     addPlayer(playerId: string, ws: RoomSocketLike, meta: PlayerMetaPayload = {}) {
         return addRoomSeat(this, playerId, ws, meta);
@@ -284,6 +296,8 @@ export class GameRoom implements RestorableRoomLike {
     isFull(): boolean {
         return isRoomFull(this);
     }
+
+    // 開局 / 順序委派區
 
     // 準備新回合的初始狀態（洗牌、移除卡、發牌）
     prepareRoundState({ orderedPlayerIds = null, roundNumber = null, openOrderDecision = true }: RoundPreparationOptions = {}) {
@@ -325,6 +339,8 @@ export class GameRoom implements RestorableRoomLike {
         broadcastRoomGameState(this);
     }
 
+    // 狀態查詢委派區
+
     // 取得玩家的遊戲狀態資料
     getPlayerState(playerId: string): GamePlayer | null {
         return getRoomPlayerState(this, playerId);
@@ -339,6 +355,8 @@ export class GameRoom implements RestorableRoomLike {
     getOpponentState(playerId: string): GamePlayer | null {
         return getRoomOpponentState(this, playerId);
     }
+
+    // 回合 runtime 委派區
 
     // 開始當前玩家回合（抽牌、重置互動狀態）
     beginTurnForCurrentPlayer(): void {
@@ -398,6 +416,8 @@ export class GameRoom implements RestorableRoomLike {
         startRoomNextRound(this);
     }
 
+    // 行動 guard 委派區
+
     // 驗證玩家是否存在於房間內
     validatePlayerInRoom(playerId: string): boolean {
         return validateRoomPlayerInRoom(this, playerId);
@@ -417,6 +437,8 @@ export class GameRoom implements RestorableRoomLike {
     validatePendingInteraction(actionType: string, playerId: string): boolean {
         return validateRoomPendingInteraction(this, actionType, playerId);
     }
+
+    // 行動 / 互動委派區
 
     // 處理玩家送出的行動（入口）
     handleAction(playerId: string, action: ServerAction): void {
